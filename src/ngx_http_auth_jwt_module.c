@@ -199,17 +199,16 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 	else if ( auth_jwt_algorithm.len == sizeof("RS256") - 1 && ngx_strncmp(auth_jwt_algorithm.data, "RS256", sizeof("RS256") - 1) == 0 )
 	{
 		// in this case, 'Binary' is a misnomer, as it is the public key string itself
-		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to find a jwt");
 		if (jwtcf->auth_jwt_use_keyfile == 1)
 		{
-			FILE *file = fopen((const char*)jwtcf->auth_jwt_keyfile_path.data, "rb");
+			FILE *file = fopen((const char*)jwtcf->auth_jwt_keyfile_path.data, "r");
 
 			// Check if file exists or is correctly opened
 			if (file == NULL)
 			{
 				char err[100];
 				strcpy(err, "failed to open pub key file: ");
-				strcat(err, KEY_FILE_PATH);
+				strcat(err, (const char*)jwtcf->auth_jwt_keyfile_path.data);
 				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, err);
 				goto redirect;
 			}
