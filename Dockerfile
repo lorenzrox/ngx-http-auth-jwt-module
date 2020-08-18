@@ -2,7 +2,7 @@ FROM centos:7
 
 LABEL maintainer="TeslaGov" email="developers@teslagov.com"
 
-ARG NGINX_VERSION=1.16.1
+ARG NGINX_VERSION=1.18.0
 ARG JANSSON_VERSION=2.10
 ARG LIBJWT_VERSION=1.9.0
 
@@ -10,10 +10,12 @@ ENV LD_LIBRARY_PATH=/usr/local/lib
 ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/share/pkgconfig
 
 RUN yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm && \
+    yum -y install http://nginx.org/packages/centos/7/noarch/RPMS/nginx-release-centos-7-0.el7.ngx.noarch.rpm && \
     yum -y update && \
     yum -y groupinstall 'Development Tools' && \
     yum -y install pcre-devel pcre zlib-devel openssl-devel wget cmake check-devel check && \
-    yum -y install nginx-$NGINX_VERSION
+    yum -y install nginx-$NGINX_VERSION && \
+	yum -y install nginx-module-njs
 
 # for compiling for epel7
 RUN yum -y install libxml2 libxslt libxml2-devel libxslt-devel gd gd-devel perl-ExtUtils-Embed geoip geoip-devel google-perftools google-perftools-devel
