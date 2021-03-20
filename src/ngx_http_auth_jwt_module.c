@@ -231,7 +231,7 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 			pub_key = malloc(key_size + 1);
 			
 			size_t readBytes = fread(pub_key, 1, key_size, file);
-			if (fread < key_size)
+			if (readBytes < key_size)
 			{
 				fclose(file);
 				
