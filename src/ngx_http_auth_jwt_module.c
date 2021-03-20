@@ -227,7 +227,8 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 
 			// Read pub key
 			pub_key = malloc(key_size + 1);
-			size_t bytes_read = fread(pub_key, 1, key_size, file);
+			
+			fread(pub_key, 1, key_size, file);
 			fclose(file);
 
 			keyBinary = (u_char*)pub_key;
@@ -489,7 +490,7 @@ static char * getJwt(ngx_http_request_t *r, ngx_str_t auth_jwt_validation_type)
 	{
 		// using authorization header
 		authorizationHeader = search_headers_in(r, authorizationHeaderName.data, authorizationHeaderName.len);
-		if (authorizationHeader != NULL)
+		if (authorizationHeader != NULL && authorizationHeader->value.len > (sizeof("Bearer ") - 1))
 		{
 			ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "Found authorization header len %d", authorizationHeader->value.len);
 
