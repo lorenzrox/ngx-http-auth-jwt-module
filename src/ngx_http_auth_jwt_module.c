@@ -221,6 +221,8 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 			
 			if (key_size == 0)
 			{
+				fclose(file);
+				
 				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "invalid key file size, check the key file");
 				goto redirect;
 			}
@@ -228,7 +230,15 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 			// Read pub key
 			pub_key = malloc(key_size + 1);
 			
-			fread(pub_key, 1, key_size, file);
+			size_t readBytes = fread(pub_key, 1, key_size, file);
+			if (fread < key_size)
+			{
+				fclose(file);
+				
+				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "an error occurred reading the key file");
+				goto redirect;
+			}
+			
 			fclose(file);
 
 			keyBinary = (u_char*)pub_key;
