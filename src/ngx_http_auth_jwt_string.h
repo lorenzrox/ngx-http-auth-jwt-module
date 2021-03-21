@@ -12,7 +12,8 @@
 
 #include <ngx_core.h>
 
-char* ngx_str_t_to_char_ptr(ngx_pool_t *pool, ngx_str_t str);
-ngx_str_t ngx_char_ptr_to_str_t(ngx_pool_t *pool, char* char_ptr);
+char *ngx_str_t_to_char_ptr(ngx_pool_t *pool, ngx_str_t str);
+ngx_str_t ngx_char_ptr_to_str_t(ngx_pool_t *pool, char *char_ptr);
+char* ngx_uchar_to_char_ptr(ngx_pool_t *pool, u_char* str, size_t len);
 
 #endif /* _NGX_HTTP_AUTH_JWT_STRING_H */
