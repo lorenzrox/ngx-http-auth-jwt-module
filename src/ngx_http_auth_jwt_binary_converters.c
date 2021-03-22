@@ -11,39 +11,47 @@
 
 #include <ngx_core.h>
 
-int hex_char_to_binary( char ch, char* ret )
+int hex_char_to_binary(char ch, char *ret)
 {
-	ch = tolower( ch );
-	if( isdigit( ch ) )
+	ch = tolower(ch);
+	if (isdigit(ch))
+	{
 		*ret = ch - '0';
-	else if( ch >= 'a' && ch <= 'f' )
-		*ret = ( ch - 'a' ) + 10;
-	else if( ch >= 'A' && ch <= 'F' )
-		*ret = ( ch - 'A' ) + 10;
+	}
+	else if (ch >= 'a' && ch <= 'f')
+	{
+		*ret = (ch - 'a') + 10;
+	}
+	else if (ch >= 'A' && ch <= 'F')
+	{
+		*ret = (ch - 'A') + 10;
+	}
 	else
+	{
 		return *ret = 0;
+	}
+
 	return 1;
 }
 
-int hex_to_binary( const char* str, u_char* buf, int len ) 
+int hex_to_binary(const char *str, u_char *buf, int len)
 {
-	u_char	
-		*cpy = buf;
-	char
-		low,
-		high;
-	int
-		odd = len % 2;
-	
-	if (odd) {
+	u_char *cpy = buf;
+	char low, high;
+	int odd = len % 2;
+
+	if (odd)
+	{
 		return -1;
 	}
 
-	for (int i = 0; i < len; i += 2) {
-		hex_char_to_binary( *(str + i), &high );
-		hex_char_to_binary( *(str + i + 1 ), &low );
-		
+	for (int i = 0; i < len; i += 2)
+	{
+		hex_char_to_binary(*(str + i), &high);
+		hex_char_to_binary(*(str + i + 1), &low);
+
 		*cpy++ = low | (high << 4);
 	}
+	
 	return 0;
 }

@@ -13,63 +13,6 @@ size_t fnv1a_hash(const char *cp)
     return hash;
 }
 
-ngx_int_t hashset_init(hashset_t *set, size_t capacity)
-{
-    if (capacity > (size_t)-1)
-    {
-        return NGX_ERROR;
-    }
-
-    set->nentries = 0;
-    set->capacity = capacity;
-
-    if (capacity > 1024)
-    {
-        set->buckets = (size_t *)malloc(capacity * sizeof(size_t));
-        set->entries = (hashset_entry_t *)malloc(capacity * sizeof(hashset_entry_t));
-    }
-    else
-    {
-        set->buckets = (size_t *)alloca(capacity * sizeof(size_t));
-        set->entries = (hashset_entry_t *)alloca(capacity * sizeof(hashset_entry_t));
-    }
-
-    if (set->buckets == NULL || set->entries == NULL)
-    {
-        return NGX_ERROR;
-    }
-
-    memset(set->buckets, 0, capacity * sizeof(size_t));
-    memset(set->entries, 0, capacity * sizeof(hashset_entry_t));
-    return NGX_OK;
-}
-
-void hashset_destroy(hashset_t *set)
-{
-    if (set->capacity > 1024)
-    {
-        if (set->buckets != NULL)
-        {
-            free(set->buckets);
-            set->buckets = NULL;
-        }
-
-        if (set->entries != NULL)
-        {
-            free(set->entries);
-            set->entries = NULL;
-        }
-    }
-    else
-    {
-        set->buckets = NULL;
-        set->entries = NULL;
-    }
-
-    set->nentries = 0;
-    set->capacity = 0;
-}
-
 ngx_flag_t hashset_contains(hashset_t *set, const char *item)
 {
     size_t hash, index;

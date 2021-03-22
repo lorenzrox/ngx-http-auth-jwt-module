@@ -30,10 +30,8 @@ typedef struct
 
 typedef struct
 {
-	ngx_str_t loginurl;
-	ngx_str_t key;
+	ngx_str_t key_source;
 	ngx_flag_t enabled;
-	ngx_flag_t redirect;
 	ngx_str_t validation_type;
 	ngx_str_t algorithm;
 	ngx_flag_t use_keyfile;
@@ -42,6 +40,7 @@ typedef struct
 	ngx_str_t roles_grant;
 	ngx_array_t *required_roles_source;
 	ngx_array_t *required_roles;
+	ngx_str_t key;
 
 } ngx_http_auth_jwt_loc_conf_t;
 
@@ -51,22 +50,15 @@ static void *ngx_http_auth_jwt_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 static ngx_int_t ngx_http_auth_jwt_init_roles(ngx_conf_t *cf, ngx_http_auth_jwt_loc_conf_t *conf);
 static char *get_jwt(ngx_http_request_t *r, ngx_str_t validation_type);
+static ngx_flag_t matches_jwt_roles(json_t *json_roles, size_t json_roles_count, ngx_array_t *required_roles);
 static ngx_flag_t validate_jwt_token_roles(ngx_http_request_t *r, const char *token_roles, ngx_array_t *required_roles_source);
 
 static ngx_command_t ngx_http_auth_jwt_commands[] = {
-
-	{ngx_string("auth_jwt_loginurl"),
-	 NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
-	 ngx_conf_set_str_slot,
-	 NGX_HTTP_LOC_CONF_OFFSET,
-	 offsetof(ngx_http_auth_jwt_loc_conf_t, loginurl),
-	 NULL},
-
 	{ngx_string("auth_jwt_key"),
 	 NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
 	 ngx_conf_set_str_slot,
 	 NGX_HTTP_LOC_CONF_OFFSET,
-	 offsetof(ngx_http_auth_jwt_loc_conf_t, key),
+	 offsetof(ngx_http_auth_jwt_loc_conf_t, key_source),
 	 NULL},
 
 	{ngx_string("auth_jwt_enabled"),
@@ -88,13 +80,6 @@ static ngx_command_t ngx_http_auth_jwt_commands[] = {
 	 ngx_conf_set_str_slot,
 	 NGX_HTTP_LOC_CONF_OFFSET,
 	 offsetof(ngx_http_auth_jwt_loc_conf_t, keyfile_path),
-	 NULL},
-
-	{ngx_string("auth_jwt_redirect"),
-	 NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
-	 ngx_conf_set_flag_slot,
-	 NGX_HTTP_LOC_CONF_OFFSET,
-	 offsetof(ngx_http_auth_jwt_loc_conf_t, redirect),
 	 NULL},
 
 	{ngx_string("auth_jwt_validation_type"),
@@ -164,26 +149,22 @@ ngx_module_t ngx_http_auth_jwt_module = {
 
 static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 {
-	char *jwtCookieValChrPtr;
-	char *return_url;
-	ngx_http_auth_jwt_loc_conf_t *jwtcf;
-	u_char *keyBinary;
-	// For clearing it later on
-	char *pub_key = NULL;
+	char *jwt_value;
+	//char *return_url;
+	ngx_http_auth_jwt_loc_conf_t *jwt_cf;
 	jwt_t *jwt = NULL;
-	int jwtParseReturnCode;
+	int jwt_parse_result;
 	jwt_alg_t alg;
 	const char *sub;
 	const char *roles;
 	ngx_str_t sub_t;
 	time_t exp;
 	time_t now;
-	int keylen;
 	ngx_str_t x_user_id_header = ngx_string("x-userid");
 
-	jwtcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
+	jwt_cf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
 
-	if (!jwtcf->enabled)
+	if (!jwt_cf->enabled)
 	{
 		return NGX_DECLINED;
 	}
@@ -194,87 +175,18 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 		return NGX_DECLINED;
 	}
 
-	jwtCookieValChrPtr = get_jwt(r, jwtcf->validation_type);
-	if (jwtCookieValChrPtr == NULL)
+	jwt_value = get_jwt(r, jwt_cf->validation_type);
+	if (jwt_value == NULL)
 	{
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to find a jwt");
 		goto redirect;
 	}
 
-	// convert key from hex to binary, if a symmetric key
-
-	if (jwtcf->algorithm.len == 0 || (jwtcf->algorithm.len == sizeof("HS256") - 1 && ngx_strncmp(jwtcf->algorithm.data, "HS256", sizeof("HS256") - 1) == 0))
-	{
-		keylen = jwtcf->key.len / 2;
-		keyBinary = ngx_palloc(r->pool, keylen);
-
-		if (hex_to_binary((char *)jwtcf->key.data, keyBinary, jwtcf->key.len) != 0)
-		{
-			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to turn hex key into binary");
-			goto redirect;
-		}
-	}
-	else if (jwtcf->algorithm.len == sizeof("RS256") - 1 && ngx_strncmp(jwtcf->algorithm.data, "RS256", sizeof("RS256") - 1) == 0)
-	{
-		// in this case, 'Binary' is a misnomer, as it is the public key string itself
-		if (jwtcf->use_keyfile == 1)
-		{
-			FILE *file = fopen((const char *)jwtcf->keyfile_path.data, "rb");
-
-			// Check if file exists or is correctly opened
-			if (file == NULL)
-			{
-				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to open pub key file '%s'", (const char *)jwtcf->keyfile_path.data);
-				goto redirect;
-			}
-
-			// Read file length
-			fseek(file, 0, SEEK_END);
-			long key_size = ftell(file);
-			fseek(file, 0, SEEK_SET);
-
-			if (key_size == 0)
-			{
-				fclose(file);
-
-				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "invalid key file size, check the key file");
-				goto redirect;
-			}
-
-			// Read pub key
-			pub_key = malloc(key_size + 1);
-
-			long readBytes = fread(pub_key, 1, key_size, file);
-			if (readBytes < key_size)
-			{
-				fclose(file);
-
-				ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "an error occurred reading the key file");
-				goto redirect;
-			}
-
-			fclose(file);
-
-			keyBinary = (u_char *)pub_key;
-			keylen = (int)key_size;
-		}
-		else
-		{
-			keyBinary = jwtcf->key.data;
-			keylen = jwtcf->key.len;
-		}
-	}
-	else
-	{
-		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "unsupported algorithm");
-		goto redirect;
-	}
-
 	// validate the jwt
-	jwtParseReturnCode = jwt_decode(&jwt, jwtCookieValChrPtr, keyBinary, keylen);
-	if (jwtParseReturnCode != 0)
+	jwt_parse_result = jwt_decode(&jwt, jwt_value, jwt_cf->key.data, jwt_cf->key.len);
+	if (jwt_parse_result != 0)
 	{
-		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to parse jwt");
+		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to parse jwt (%d)", jwt_parse_result);
 		goto redirect;
 	}
 
@@ -307,10 +219,10 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 		set_custom_header_in_headers_out(r, &x_user_id_header, &sub_t);
 	}
 
-	if (jwtcf->validate_roles == 1 && jwtcf->required_roles->nelts > 0)
+	if (jwt_cf->validate_roles == 1 && jwt_cf->required_roles->nelts > 0)
 	{
-		roles = jwt_get_grants_json(jwt, (const char *)jwtcf->roles_grant.data);
-		if (roles == NULL || validate_jwt_token_roles(r, roles, jwtcf->required_roles) == 0)
+		roles = jwt_get_grants_json(jwt, (const char *)jwt_cf->roles_grant.data);
+		if (roles == NULL || validate_jwt_token_roles(r, roles, jwt_cf->required_roles) == 0)
 		{
 			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "jwt roles validation failed");
 			goto redirect;
@@ -318,11 +230,6 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 	}
 
 	jwt_free(jwt);
-
-	if (pub_key == NULL)
-	{
-		free(pub_key);
-	}
 
 	return NGX_OK;
 
@@ -332,95 +239,7 @@ redirect:
 		jwt_free(jwt);
 	}
 
-	r->headers_out.location = ngx_list_push(&r->headers_out.headers);
-
-	if (r->headers_out.location == NULL)
-	{
-		ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
-	}
-
-	r->headers_out.location->hash = 1;
-	r->headers_out.location->key.len = sizeof("Location") - 1;
-	r->headers_out.location->key.data = (u_char *)"Location";
-
-	if (r->method == NGX_HTTP_GET)
-	{
-		int loginlen;
-		char *scheme;
-		ngx_str_t server;
-		ngx_str_t uri_variable_name = ngx_string("request_uri");
-		ngx_int_t uri_variable_hash;
-		ngx_http_variable_value_t *request_uri_var;
-		ngx_str_t uri;
-		ngx_str_t uri_escaped;
-		uintptr_t escaped_len;
-
-		loginlen = jwtcf->loginurl.len;
-
-		scheme = (r->connection->ssl) ? "https" : "http";
-		server = r->headers_in.server;
-
-		// get the URI
-		uri_variable_hash = ngx_hash_key(uri_variable_name.data, uri_variable_name.len);
-		request_uri_var = ngx_http_get_variable(r, &uri_variable_name, uri_variable_hash);
-
-		// get the URI
-		if (request_uri_var && !request_uri_var->not_found && request_uri_var->valid)
-		{
-			// ideally we would like the uri with the querystring parameters
-			uri.data = ngx_palloc(r->pool, request_uri_var->len);
-			uri.len = request_uri_var->len;
-			ngx_memcpy(uri.data, request_uri_var->data, request_uri_var->len);
-
-			// ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "found uri with querystring %s", ngx_str_t_to_char_ptr(r->pool, uri));
-		}
-		else
-		{
-			// fallback to the querystring without params
-			uri = r->uri;
-
-			// ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fallback to querystring without params");
-		}
-
-		// escape the URI
-		escaped_len = 2 * ngx_escape_uri(NULL, uri.data, uri.len, NGX_ESCAPE_ARGS) + uri.len;
-		uri_escaped.data = ngx_palloc(r->pool, escaped_len);
-		uri_escaped.len = escaped_len;
-		ngx_escape_uri(uri_escaped.data, uri.data, uri.len, NGX_ESCAPE_ARGS);
-
-		r->headers_out.location->value.len = loginlen + sizeof("?return_url=") - 1 + strlen(scheme) + sizeof("://") - 1 + server.len + uri_escaped.len;
-		return_url = ngx_palloc(r->pool, r->headers_out.location->value.len);
-		ngx_memcpy(return_url, jwtcf->loginurl.data, jwtcf->loginurl.len);
-		int return_url_idx = jwtcf->loginurl.len;
-		ngx_memcpy(return_url + return_url_idx, "?return_url=", sizeof("?return_url=") - 1);
-		return_url_idx += sizeof("?return_url=") - 1;
-		ngx_memcpy(return_url + return_url_idx, scheme, strlen(scheme));
-		return_url_idx += strlen(scheme);
-		ngx_memcpy(return_url + return_url_idx, "://", sizeof("://") - 1);
-		return_url_idx += sizeof("://") - 1;
-		ngx_memcpy(return_url + return_url_idx, server.data, server.len);
-		return_url_idx += server.len;
-		ngx_memcpy(return_url + return_url_idx, uri_escaped.data, uri_escaped.len);
-		return_url_idx += uri_escaped.len;
-		r->headers_out.location->value.data = (u_char *)return_url;
-
-		// ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "return_url: %s", ngx_str_t_to_char_ptr(r->pool, r->headers_out.location->value));
-	}
-	else
-	{
-		// for non-get requests, redirect to the login page without a return URL
-		r->headers_out.location->value.len = jwtcf->loginurl.len;
-		r->headers_out.location->value.data = jwtcf->loginurl.data;
-	}
-
-	if (jwtcf->redirect)
-	{
-		return NGX_HTTP_MOVED_TEMPORARILY;
-	}
-	else
-	{
-		return NGX_HTTP_UNAUTHORIZED;
-	}
+	return NGX_HTTP_UNAUTHORIZED;
 }
 
 static ngx_int_t ngx_http_auth_jwt_init(ngx_conf_t *cf)
@@ -452,7 +271,6 @@ static void *ngx_http_auth_jwt_create_loc_conf(ngx_conf_t *cf)
 
 	// set the flag to unset
 	conf->enabled = (ngx_flag_t)-1;
-	conf->redirect = (ngx_flag_t)-1;
 	conf->use_keyfile = (ngx_flag_t)-1;
 	conf->validate_roles = (ngx_flag_t)-1;
 	conf->required_roles_source = NGX_CONF_UNSET_PTR;
@@ -468,8 +286,7 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 	ngx_http_auth_jwt_loc_conf_t *prev = parent;
 	ngx_http_auth_jwt_loc_conf_t *conf = child;
 
-	ngx_conf_merge_str_value(conf->loginurl, prev->loginurl, "");
-	ngx_conf_merge_str_value(conf->key, prev->key, "");
+	ngx_conf_merge_str_value(conf->key_source, prev->key_source, "");
 	ngx_conf_merge_str_value(conf->validation_type, prev->validation_type, "");
 	ngx_conf_merge_str_value(conf->algorithm, prev->algorithm, "HS256");
 	ngx_conf_merge_str_value(conf->keyfile_path, prev->keyfile_path, KEY_FILE_PATH);
@@ -479,11 +296,6 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 	if (conf->enabled == ((ngx_flag_t)-1))
 	{
 		conf->enabled = (prev->enabled == ((ngx_flag_t)-1)) ? 0 : prev->enabled;
-	}
-
-	if (conf->redirect == ((ngx_flag_t)-1))
-	{
-		conf->redirect = (prev->redirect == ((ngx_flag_t)-1)) ? 0 : prev->redirect;
 	}
 
 	if (conf->use_keyfile == ((ngx_flag_t)-1))
@@ -507,6 +319,72 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 		{
 			return NGX_CONF_ERROR;
 		}
+	}
+
+	// convert key from hex to binary, if a symmetric key
+	if (conf->algorithm.len == 0 || (conf->algorithm.len == sizeof("HS256") - 1 && ngx_strncmp(conf->algorithm.data, "HS256", sizeof("HS256") - 1) == 0))
+	{
+		conf->key.len = conf->key_source.len / 2;
+		conf->key.data = ngx_palloc(cf->pool, conf->key.len);
+
+		if (hex_to_binary((char *)conf->key_source.data, conf->key.data, conf->key_source.len) != 0)
+		{
+			ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "failed to turn hex key into binary");
+			return NGX_CONF_ERROR;
+		}
+	}
+	else if (conf->algorithm.len == sizeof("RS256") - 1 && ngx_strncmp(conf->algorithm.data, "RS256", sizeof("RS256") - 1) == 0)
+	{
+		// in this case, 'Binary' is a misnomer, as it is the public key string itself
+		if (conf->use_keyfile == 1)
+		{
+			FILE *file = fopen((const char *)conf->keyfile_path.data, "rb");
+
+			// Check if file exists or is correctly opened
+			if (file == NULL)
+			{
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "failed to open pub key file '%s'", (const char *)conf->keyfile_path.data);
+				return NGX_CONF_ERROR;
+			}
+
+			// Read file length
+			fseek(file, 0, SEEK_END);
+			long key_size = ftell(file);
+			fseek(file, 0, SEEK_SET);
+
+			if (key_size == 0)
+			{
+				fclose(file);
+
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "invalid key file size, check the key file");
+				return NGX_CONF_ERROR;
+			}
+
+			// Read pub key
+			conf->key.len = (size_t)key_size;
+			conf->key.data = ngx_palloc(cf->pool, key_size);
+
+			long readBytes = fread(conf->key.data, 1, key_size, file);
+			if (readBytes < key_size)
+			{
+				fclose(file);
+
+				ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "an error occurred reading the key file");
+				return NGX_CONF_ERROR;
+			}
+
+			fclose(file);
+		}
+		else
+		{
+			conf->key.data = conf->key_source.data;
+			conf->key.len = conf->key_source.len;
+		}
+	}
+	else
+	{
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "unsupported algorithm");
+		return NGX_CONF_ERROR;
 	}
 
 	return NGX_CONF_OK;
@@ -577,49 +455,47 @@ static ngx_int_t ngx_http_auth_jwt_init_roles(ngx_conf_t *cf, ngx_http_auth_jwt_
 
 static char *get_jwt(ngx_http_request_t *r, ngx_str_t validation_type)
 {
-	static const ngx_str_t authorizationHeaderName = ngx_string("Authorization");
-	ngx_table_elt_t *authorizationHeader;
-	char *jwtCookieValChrPtr = NULL;
-	ngx_str_t jwtCookieVal;
+	static const ngx_str_t authorization_header_name = ngx_string("Authorization");
+	ngx_table_elt_t *authorization_header;
+	char *jwt_value = NULL;
+	ngx_str_t jwt_http_value;
 	ngx_int_t n;
-	ngx_str_t authorizationHeaderStr;
 	u_char *p, *equal, *amp, *last;
 
 	ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "validation_type.len %d", validation_type.len);
 
-	if (validation_type.len == 0 || (validation_type.len == sizeof("AUTHORIZATION") - 1 && ngx_strncmp(validation_type.data, "AUTHORIZATION", sizeof("AUTHORIZATION") - 1) == 0))
+	if (validation_type.len == 0 || (validation_type.len == (sizeof("AUTHORIZATION") - 1) && ngx_strncmp(validation_type.data, "AUTHORIZATION", (sizeof("AUTHORIZATION") - 1)) == 0))
 	{
 		// using authorization header
-		authorizationHeader = search_headers_in(r, authorizationHeaderName.data, authorizationHeaderName.len);
-		if (authorizationHeader != NULL && authorizationHeader->value.len > (sizeof("Bearer ") - 1))
+		authorization_header = search_headers_in(r, authorization_header_name.data, authorization_header_name.len);
+		if (authorization_header != NULL && authorization_header->value.len > (sizeof("Bearer ") - 1))
 		{
-			ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "Found authorization header len %d", authorizationHeader->value.len);
+			ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "Found authorization header len %d", authorization_header->value.len);
 
-			authorizationHeaderStr.data = authorizationHeader->value.data + sizeof("Bearer ") - 1;
-			authorizationHeaderStr.len = authorizationHeader->value.len - (sizeof("Bearer ") - 1);
+			jwt_http_value.data = authorization_header->value.data + (sizeof("Bearer ") - 1);
+			jwt_http_value.len = authorization_header->value.len - (sizeof("Bearer ") - 1);
 
-			jwtCookieValChrPtr = ngx_str_t_to_char_ptr(r->pool, authorizationHeaderStr);
+			jwt_value = ngx_str_t_to_char_ptr(r->pool, jwt_http_value);
 		}
 	}
-	else if (validation_type.len > sizeof("COOKIE=") && ngx_strncmp(validation_type.data, "COOKIE=", sizeof("COOKIE=") - 1) == 0)
+	else if (validation_type.len > sizeof("COOKIE=") && ngx_strncmp(validation_type.data, "COOKIE=", (sizeof("COOKIE=") - 1)) == 0)
 	{
-		validation_type.data += sizeof("COOKIE=") - 1;
-		validation_type.len -= sizeof("COOKIE=") - 1;
+		validation_type.data += (sizeof("COOKIE=") - 1);
+		validation_type.len -= (sizeof("COOKIE=") - 1);
 
 		// get the cookie
-		// TODO: the cookie name could be passed in dynamicallly
-		n = ngx_http_parse_multi_header_lines(&r->headers_in.cookies, &validation_type, &jwtCookieVal);
+		n = ngx_http_parse_multi_header_lines(&r->headers_in.cookies, &validation_type, &jwt_http_value);
 		if (n != NGX_DECLINED)
 		{
-			jwtCookieValChrPtr = ngx_str_t_to_char_ptr(r->pool, jwtCookieVal);
+			jwt_value = ngx_str_t_to_char_ptr(r->pool, jwt_http_value);
 		}
 	}
-	else if (validation_type.len > sizeof("URL=") && ngx_strncmp(validation_type.data, "URL=", sizeof("URL=") - 1) == 0)
+	else if (validation_type.len > sizeof("URL=") && ngx_strncmp(validation_type.data, "URL=", (sizeof("URL=") - 1)) == 0)
 	{
 		if (r->args.len > (validation_type.len - (sizeof("URL=") - 1)) + 1)
 		{
-			validation_type.data += sizeof("URL=") - 1;
-			validation_type.len -= sizeof("URL=") - 1;
+			validation_type.data += (sizeof("URL=") - 1);
+			validation_type.len -= (sizeof("URL=") - 1);
 
 			p = (u_char *)ngx_strstr(r->args.data, validation_type.data);
 			if (p != NULL)
@@ -636,14 +512,90 @@ static char *get_jwt(ngx_http_request_t *r, ngx_str_t validation_type)
 
 					if (amp - equal > 0)
 					{
-						jwtCookieValChrPtr = ngx_uchar_to_char_ptr(r->pool, equal, amp - equal);
+						jwt_value = ngx_uchar_to_char_ptr(r->pool, equal, amp - equal);
 					}
 				}
 			}
 		}
 	}
 
-	return jwtCookieValChrPtr;
+	return jwt_value;
+}
+
+static ngx_flag_t matches_jwt_roles(json_t *json_roles, size_t json_roles_count, ngx_array_t *required_roles)
+{
+	ngx_flag_t result;
+	size_t i, j;
+	const char *role;
+	ngx_http_auth_jwt_roles_t *jwt_roles;
+
+	hashset_t hashset;
+	hashset.nentries = 0;
+	hashset.capacity = json_roles_count;
+
+	if (json_roles_count > 1024)
+	{
+		hashset.buckets = (size_t *)malloc(json_roles_count * sizeof(size_t));
+		hashset.entries = (hashset_entry_t *)malloc(json_roles_count * sizeof(hashset_entry_t));
+	}
+	else
+	{
+		hashset.buckets = (size_t *)alloca(json_roles_count * sizeof(size_t));
+		hashset.entries = (hashset_entry_t *)alloca(json_roles_count * sizeof(hashset_entry_t));
+	}
+
+	memset(hashset.buckets, 0, json_roles_count * sizeof(size_t));
+	memset(hashset.entries, 0, json_roles_count * sizeof(hashset_entry_t));
+
+	for (i = 0; i < json_roles_count; i++)
+	{
+		role = json_string_value(json_array_get(json_roles, i));
+		if (role == NULL)
+		{
+			continue;
+		}
+
+		hashset_add(&hashset, role);
+	}
+
+	for (i = 0; i < required_roles->nelts;)
+	{
+		jwt_roles = &((ngx_http_auth_jwt_roles_t *)required_roles->elts)[i];
+		if (jwt_roles->roles.nelts != json_roles_count)
+		{
+			goto next_policy;
+		}
+
+		for (j = 0; j < jwt_roles->roles.nelts;)
+		{
+			if (hashset_contains(&hashset, (const char *)((ngx_str_t *)jwt_roles->roles.elts)[j].data))
+			{
+				goto next_role;
+			}
+
+			goto next_policy;
+
+		next_role:
+			j++;
+		}
+
+		result = 1;
+		goto end;
+
+	next_policy:
+		i++;
+	}
+
+	result = 0;
+
+end:
+	if (json_roles_count > 1024)
+	{
+		free(hashset.buckets);
+		free(hashset.entries);
+	}
+
+	return result;
 }
 
 static ngx_flag_t validate_jwt_token_roles(ngx_http_request_t *r, const char *token_roles, ngx_array_t *required_roles)
@@ -651,9 +603,8 @@ static ngx_flag_t validate_jwt_token_roles(ngx_http_request_t *r, const char *to
 	const char *role;
 	json_t *json_roles;
 	json_error_t error;
-	size_t i, j, json_roles_count;
+	size_t i, json_roles_count;
 	ngx_http_auth_jwt_roles_t *jwt_roles;
-	hashset_t hashset;
 
 	json_roles = json_loads(token_roles, JSON_DECODE_ANY | JSON_DISABLE_EOF_CHECK, &error);
 	if (json_roles != NULL)
@@ -678,45 +629,9 @@ static ngx_flag_t validate_jwt_token_roles(ngx_http_request_t *r, const char *to
 			}
 			else if (json_roles_count > 0)
 			{
-				if (hashset_init(&hashset, json_roles_count) == NGX_OK)
+				if (matches_jwt_roles(json_roles, json_roles_count, required_roles))
 				{
-					for (i = 0; i < json_roles_count; i++)
-					{
-						role = json_string_value(json_array_get(json_roles, i));
-						if (role == NULL)
-						{
-							continue;
-						}
-
-						hashset_add(&hashset, role);
-					}
-
-					for (i = 0; i < required_roles->nelts;)
-					{
-						jwt_roles = &((ngx_http_auth_jwt_roles_t *)required_roles->elts)[i];
-						if (jwt_roles->roles.nelts != json_roles_count)
-						{
-							goto next_policy;
-						}
-
-						for (j = 0; j < jwt_roles->roles.nelts;)
-						{
-							if (hashset_contains(&hashset, (const char *)((ngx_str_t *)jwt_roles->roles.elts)[j].data))
-							{
-								goto next_role;
-							}
-
-							goto next_policy;
-
-						next_role:
-							j++;
-						}
-
-					next_policy:
-						i++;
-					}
-
-					hashset_destroy(&hashset);
+					goto success;
 				}
 			}
 		}
