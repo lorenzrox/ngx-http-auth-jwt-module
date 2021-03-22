@@ -119,7 +119,7 @@ ngx_flag_t hashset_add(hashset_t *set, const char *item)
         bucket_index = entry->next;
     }
 
-    entry = &set->buckets[set->nentries];
+    entry = &set->entries[set->nentries];
     entry->hash = hash;
     entry->value = item;
     entry->next = *bucket - 1;
