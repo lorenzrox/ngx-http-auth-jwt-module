@@ -16,7 +16,7 @@
  * Sample code from nginx.
  * https://www.nginx.com/resources/wiki/start/topics/examples/headers_management/?highlight=http%20settings
  */
-ngx_table_elt_t *search_headers_in(ngx_http_request_t *r, u_char *name, size_t len)
+ngx_table_elt_t *search_headers_in(ngx_http_request_t *r, ngx_str_t *name)
 {
 	ngx_list_part_t *part;
 	ngx_table_elt_t *h;
@@ -43,7 +43,7 @@ ngx_table_elt_t *search_headers_in(ngx_http_request_t *r, u_char *name, size_t l
 		}
 
 		//Just compare the lengths and then the names case insensitively.
-		if (len != h[i].key.len || ngx_strcasecmp(name, h[i].key.data) != 0)
+		if (name->len != h[i].key.len || ngx_strcasecmp(name->data, h[i].key.data) != 0)
 		{
 			/* This header doesn't match. */
 			continue;

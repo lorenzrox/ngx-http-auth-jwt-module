@@ -23,10 +23,18 @@
 
 static const char *KEY_FILE_PATH = "/app/pub_key";
 
+typedef char *(*ngx_http_auth_jwt_access_pt)(ngx_http_request_t *r, ngx_str_t *context);
+
 typedef struct
 {
 	ngx_array_t roles;
 } ngx_http_auth_jwt_roles_t;
+
+typedef struct
+{
+	ngx_http_auth_jwt_access_pt handler;
+	ngx_str_t context;
+} ngx_http_auth_jwt_accessor_t;
 
 typedef struct
 {
@@ -41,6 +49,7 @@ typedef struct
 	ngx_array_t *required_roles_source;
 	ngx_array_t *required_roles;
 	ngx_str_t key;
+	ngx_http_auth_jwt_accessor_t jwt_accessor;
 
 } ngx_http_auth_jwt_loc_conf_t;
 
@@ -49,7 +58,9 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r);
 static void *ngx_http_auth_jwt_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 static ngx_int_t ngx_http_auth_jwt_init_roles(ngx_conf_t *cf, ngx_http_auth_jwt_loc_conf_t *conf);
-static char *get_jwt(ngx_http_request_t *r, ngx_str_t validation_type);
+static char *get_jwt_from_header(ngx_http_request_t *r, ngx_str_t *context);
+static char *get_jwt_from_cookie(ngx_http_request_t *r, ngx_str_t *context);
+static char *get_jwt_from_url(ngx_http_request_t *r, ngx_str_t *context);
 static ngx_flag_t matches_jwt_roles(json_t *json_roles, size_t json_roles_count, ngx_array_t *required_roles);
 static ngx_flag_t validate_jwt_token_roles(ngx_http_request_t *r, const char *token_roles, ngx_array_t *required_roles_source);
 
@@ -175,7 +186,7 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 		return NGX_DECLINED;
 	}
 
-	jwt_value = get_jwt(r, jwt_cf->validation_type);
+	jwt_value = jwt_cf->jwt_accessor.handler(r, &jwt_cf->jwt_accessor.context);
 	if (jwt_value == NULL)
 	{
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to find a jwt");
@@ -387,6 +398,71 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 		return NGX_CONF_ERROR;
 	}
 
+	if (conf->validation_type.len == 0)
+	{
+		conf->jwt_accessor.handler = get_jwt_from_header;
+		conf->jwt_accessor.context.data = (u_char *)"Authorization";
+		conf->jwt_accessor.context.len = sizeof("Authorization") - 1;
+
+		ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0, "Serching for jwt in header 'Authorization'");
+	}
+	else if (conf->validation_type.len >= (sizeof("HEADER=") - 1) && ngx_strncmp(conf->validation_type.data, "HEADER=", (sizeof("HEADER=") - 1)) == 0)
+	{
+		conf->jwt_accessor.handler = get_jwt_from_header;
+		conf->jwt_accessor.context.len = conf->validation_type.len - (sizeof("HEADER=") - 1);
+
+		if (conf->jwt_accessor.context.len == 0)
+		{
+			conf->jwt_accessor.context.data = (u_char *)"Authorization";
+			conf->jwt_accessor.context.len = sizeof("Authorization") - 1;
+		}
+		else
+		{
+			conf->jwt_accessor.context.data = conf->validation_type.data + (sizeof("HEADER=") - 1);
+		}
+
+		ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0, "Serching for jwt in header '%s'", conf->jwt_accessor.context.data);
+	}
+	else if (conf->validation_type.len >= (sizeof("COOKIE=") - 1) && ngx_strncmp(conf->validation_type.data, "COOKIE=", (sizeof("COOKIE=") - 1)) == 0)
+	{
+		conf->jwt_accessor.handler = get_jwt_from_cookie;
+		conf->jwt_accessor.context.len = conf->validation_type.len - (sizeof("COOKIE=") - 1);
+
+		if (conf->jwt_accessor.context.len == 0)
+		{
+			conf->jwt_accessor.context.data = (u_char *)"access_token";
+			conf->jwt_accessor.context.len = sizeof("access_token") - 1;
+		}
+		else
+		{
+			conf->jwt_accessor.context.data = conf->validation_type.data + (sizeof("COOKIE=") - 1);
+		}
+
+		ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0, "Serching for jwt in cookie '%s'", conf->jwt_accessor.context.data);
+	}
+	else if (conf->validation_type.len >= (sizeof("URL=") - 1) && ngx_strncmp(conf->validation_type.data, "URL=", (sizeof("URL=") - 1)) == 0)
+	{
+		conf->jwt_accessor.handler = get_jwt_from_url;
+		conf->jwt_accessor.context.len = conf->validation_type.len - (sizeof("URL=") - 1);
+
+		if (conf->jwt_accessor.context.len == 0)
+		{
+			conf->jwt_accessor.context.data = (u_char *)"access_token";
+			conf->jwt_accessor.context.len = sizeof("access_token") - 1;
+		}
+		else
+		{
+			conf->jwt_accessor.context.data = conf->validation_type.data + (sizeof("URL=") - 1);
+		}
+
+		ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0, "Serching for jwt in url param '%s'", conf->jwt_accessor.context.data);
+	}
+	else
+	{
+		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "unsupported validation type");
+		return NGX_CONF_ERROR;
+	}
+
 	return NGX_CONF_OK;
 }
 
@@ -442,7 +518,7 @@ static ngx_int_t ngx_http_auth_jwt_init_roles(ngx_conf_t *cf, ngx_http_auth_jwt_
 					role->data = ngx_palloc(cf->pool, role->len + 1);
 					ngx_memcpy(role->data, token, role->len + 1);
 
-					ngx_log_error(NGX_LOG_ERR, cf->log, 0, "Found role %s for policy %d", token, i);
+					ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0, "Found role %s for policy %d", token, i);
 
 					token = strtok_r(NULL, " ", &context);
 				} while (token != NULL);
@@ -453,73 +529,67 @@ static ngx_int_t ngx_http_auth_jwt_init_roles(ngx_conf_t *cf, ngx_http_auth_jwt_
 	return NGX_OK;
 }
 
-static char *get_jwt(ngx_http_request_t *r, ngx_str_t validation_type)
+static char *get_jwt_from_header(ngx_http_request_t *r, ngx_str_t *context)
 {
-	static const ngx_str_t authorization_header_name = ngx_string("Authorization");
 	ngx_table_elt_t *authorization_header;
-	char *jwt_value = NULL;
+	ngx_str_t jwt_http_value;
+
+	// using authorization header
+	authorization_header = search_headers_in(r, context);
+	if (authorization_header != NULL && authorization_header->value.len > (sizeof("Bearer ") - 1))
+	{
+		jwt_http_value.data = authorization_header->value.data + (sizeof("Bearer ") - 1);
+		jwt_http_value.len = authorization_header->value.len - (sizeof("Bearer ") - 1);
+
+		return ngx_str_t_to_char_ptr(r->pool, jwt_http_value);
+	}
+
+	return NULL;
+}
+
+static char *get_jwt_from_cookie(ngx_http_request_t *r, ngx_str_t *context)
+{
 	ngx_str_t jwt_http_value;
 	ngx_int_t n;
+
+	// get the cookie
+	n = ngx_http_parse_multi_header_lines(&r->headers_in.cookies, context, &jwt_http_value);
+	if (n != NGX_DECLINED)
+	{
+		return ngx_str_t_to_char_ptr(r->pool, jwt_http_value);
+	}
+
+	return NULL;
+}
+
+static char *get_jwt_from_url(ngx_http_request_t *r, ngx_str_t *context)
+{
 	u_char *p, *equal, *amp, *last;
 
-	ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "validation_type.len %d", validation_type.len);
-
-	if (validation_type.len == 0 || (validation_type.len == (sizeof("AUTHORIZATION") - 1) && ngx_strncmp(validation_type.data, "AUTHORIZATION", (sizeof("AUTHORIZATION") - 1)) == 0))
+	if (r->args.len > context->len + 1)
 	{
-		// using authorization header
-		authorization_header = search_headers_in(r, authorization_header_name.data, authorization_header_name.len);
-		if (authorization_header != NULL && authorization_header->value.len > (sizeof("Bearer ") - 1))
+		p = (u_char *)ngx_strstr(r->args.data, context->data);
+		if (p != NULL)
 		{
-			ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "Found authorization header len %d", authorization_header->value.len);
-
-			jwt_http_value.data = authorization_header->value.data + (sizeof("Bearer ") - 1);
-			jwt_http_value.len = authorization_header->value.len - (sizeof("Bearer ") - 1);
-
-			jwt_value = ngx_str_t_to_char_ptr(r->pool, jwt_http_value);
-		}
-	}
-	else if (validation_type.len > sizeof("COOKIE=") && ngx_strncmp(validation_type.data, "COOKIE=", (sizeof("COOKIE=") - 1)) == 0)
-	{
-		validation_type.data += (sizeof("COOKIE=") - 1);
-		validation_type.len -= (sizeof("COOKIE=") - 1);
-
-		// get the cookie
-		n = ngx_http_parse_multi_header_lines(&r->headers_in.cookies, &validation_type, &jwt_http_value);
-		if (n != NGX_DECLINED)
-		{
-			jwt_value = ngx_str_t_to_char_ptr(r->pool, jwt_http_value);
-		}
-	}
-	else if (validation_type.len > sizeof("URL=") && ngx_strncmp(validation_type.data, "URL=", (sizeof("URL=") - 1)) == 0)
-	{
-		if (r->args.len > (validation_type.len - (sizeof("URL=") - 1)) + 1)
-		{
-			validation_type.data += (sizeof("URL=") - 1);
-			validation_type.len -= (sizeof("URL=") - 1);
-
-			p = (u_char *)ngx_strstr(r->args.data, validation_type.data);
-			if (p != NULL)
+			last = r->args.data + r->args.len;
+			equal = ngx_strlchr(p + context->len, last, '=');
+			if (equal != NULL)
 			{
-				last = r->args.data + r->args.len;
-				equal = ngx_strlchr(p + validation_type.len, last, '=');
-				if (equal != NULL)
+				amp = ngx_strlchr(++equal, last, '&');
+				if (amp == NULL)
 				{
-					amp = ngx_strlchr(++equal, last, '&');
-					if (amp == NULL)
-					{
-						amp = last;
-					}
+					amp = last;
+				}
 
-					if (amp - equal > 0)
-					{
-						jwt_value = ngx_uchar_to_char_ptr(r->pool, equal, amp - equal);
-					}
+				if (amp - equal > 0)
+				{
+					return ngx_uchar_to_char_ptr(r->pool, equal, amp - equal);
 				}
 			}
 		}
 	}
 
-	return jwt_value;
+	return NULL;
 }
 
 static ngx_flag_t matches_jwt_roles(json_t *json_roles, size_t json_roles_count, ngx_array_t *required_roles)
@@ -544,8 +614,8 @@ static ngx_flag_t matches_jwt_roles(json_t *json_roles, size_t json_roles_count,
 		hashset.entries = (hashset_entry_t *)alloca(json_roles_count * sizeof(hashset_entry_t));
 	}
 
-	memset(hashset.buckets, 0, json_roles_count * sizeof(size_t));
-	memset(hashset.entries, 0, json_roles_count * sizeof(hashset_entry_t));
+	ngx_memzero(hashset.buckets, json_roles_count * sizeof(size_t));
+	ngx_memzero(hashset.entries, json_roles_count * sizeof(hashset_entry_t));
 
 	for (i = 0; i < json_roles_count; i++)
 	{
