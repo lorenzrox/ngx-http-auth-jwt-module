@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "ngx_http_auth_jwt_binary_converters.h": "c",
+        "jansson.h": "c",
+        "ngx_http.h": "c",
+        "type_traits": "c",
+        "stdio.h": "c"
+    }
+}

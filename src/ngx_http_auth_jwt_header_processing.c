@@ -16,18 +16,18 @@
  * Sample code from nginx.
  * https://www.nginx.com/resources/wiki/start/topics/examples/headers_management/?highlight=http%20settings
  */
-ngx_table_elt_t* search_headers_in(ngx_http_request_t *r, u_char *name, size_t len)
+ngx_table_elt_t *search_headers_in(ngx_http_request_t *r, u_char *name, size_t len)
 {
-	ngx_list_part_t            *part;
-	ngx_table_elt_t            *h;
-	ngx_uint_t                  i;
+	ngx_list_part_t *part;
+	ngx_table_elt_t *h;
+	ngx_uint_t i;
 
 	// Get the first part of the list. There is usual only one part.
 	part = &r->headers_in.headers.part;
 	h = part->elts;
 
 	// Headers list array may consist of more than one part, so loop through all of it
-	for (i = 0; /* void */ ; i++)
+	for (i = 0; /* void */; i++)
 	{
 		if (i >= part->nelts)
 		{
@@ -65,31 +65,33 @@ ngx_table_elt_t* search_headers_in(ngx_http_request_t *r, u_char *name, size_t l
  * Sample code from nginx
  * https://www.nginx.com/resources/wiki/start/topics/examples/headers_management/#how-can-i-set-a-header
  */
-ngx_int_t set_custom_header_in_headers_out(ngx_http_request_t *r, ngx_str_t *key, ngx_str_t *value) {
-    ngx_table_elt_t   *h;
+ngx_int_t set_custom_header_in_headers_out(ngx_http_request_t *r, ngx_str_t *key, ngx_str_t *value)
+{
+	ngx_table_elt_t *h;
 
-    /*
+	/*
     All we have to do is just to allocate the header...
     */
-    h = ngx_list_push(&r->headers_out.headers);
-    if (h == NULL) {
-        return NGX_ERROR;
-    }
+	h = ngx_list_push(&r->headers_out.headers);
+	if (h == NULL)
+	{
+		return NGX_ERROR;
+	}
 
-    /*
+	/*
     ... setup the header key ...
     */
-    h->key = *key;
+	h->key = *key;
 
-    /*
+	/*
     ... and the value.
     */
-    h->value = *value;
+	h->value = *value;
 
-    /*
+	/*
     Mark the header as not deleted.
     */
-    h->hash = 1;
+	h->hash = 1;
 
-    return NGX_OK;
+	return NGX_OK;
 }

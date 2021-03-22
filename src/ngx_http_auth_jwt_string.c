@@ -30,7 +30,7 @@ char* ngx_uchar_to_char_ptr(ngx_pool_t *pool, u_char* str, size_t len)
 /** copies a character pointer string to an nginx string structure */
 ngx_str_t ngx_char_ptr_to_str_t(ngx_pool_t *pool, char* char_ptr)
 {
-	int len = strlen(char_ptr);
+	size_t len = ngx_strlen(char_ptr);
 
 	ngx_str_t str_t;
 	str_t.data = ngx_palloc(pool, len);
