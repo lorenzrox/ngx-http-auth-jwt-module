@@ -45,7 +45,8 @@ typedef struct
 	ngx_flag_t use_keyfile;
 	ngx_str_t keyfile_path;
 	ngx_flag_t validate_roles;
-	ngx_str_t roles_grant;
+	ngx_str_t name_grant;
+	ngx_str_t role_grant;
 	ngx_array_t *required_roles_source;
 	ngx_array_t *required_roles;
 	ngx_str_t key;
@@ -114,11 +115,18 @@ static ngx_command_t ngx_http_auth_jwt_commands[] = {
 	 offsetof(ngx_http_auth_jwt_loc_conf_t, validate_roles),
 	 NULL},
 
-	{ngx_string("auth_jwt_roles_grant"),
+	{ngx_string("auth_jwt_name_grant"),
 	 NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
 	 ngx_conf_set_str_slot,
 	 NGX_HTTP_LOC_CONF_OFFSET,
-	 offsetof(ngx_http_auth_jwt_loc_conf_t, roles_grant),
+	 offsetof(ngx_http_auth_jwt_loc_conf_t, name_grant),
+	 NULL},
+
+	{ngx_string("auth_jwt_role_grant"),
+	 NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+	 ngx_conf_set_str_slot,
+	 NGX_HTTP_LOC_CONF_OFFSET,
+	 offsetof(ngx_http_auth_jwt_loc_conf_t, role_grant),
 	 NULL},
 
 	{ngx_string("auth_jwt_required_role"),
@@ -219,7 +227,7 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 	}
 
 	// extract the userid
-	sub = jwt_get_grant(jwt, "sub");
+	sub = jwt_get_grant(jwt, (const char *)jwt_cf->name_grant.data);
 	if (sub == NULL)
 	{
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "the jwt does not contain a subject");
@@ -232,7 +240,7 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 
 	if (jwt_cf->validate_roles == 1 && jwt_cf->required_roles->nelts > 0)
 	{
-		roles = jwt_get_grants_json(jwt, (const char *)jwt_cf->roles_grant.data);
+		roles = jwt_get_grants_json(jwt, (const char *)jwt_cf->role_grant.data);
 		if (roles == NULL || validate_jwt_token_roles(r, roles, jwt_cf->required_roles) == 0)
 		{
 			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "jwt roles validation failed");
@@ -301,7 +309,8 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 	ngx_conf_merge_str_value(conf->validation_type, prev->validation_type, "");
 	ngx_conf_merge_str_value(conf->algorithm, prev->algorithm, "HS256");
 	ngx_conf_merge_str_value(conf->keyfile_path, prev->keyfile_path, KEY_FILE_PATH);
-	ngx_conf_merge_str_value(conf->roles_grant, prev->roles_grant, "");
+	ngx_conf_merge_str_value(conf->name_grant, prev->name_grant, "sub");
+	ngx_conf_merge_str_value(conf->role_grant, prev->role_grant, "role");
 	ngx_conf_merge_ptr_value(conf->required_roles_source, prev->required_roles_source, NULL);
 
 	if (conf->enabled == ((ngx_flag_t)-1))
