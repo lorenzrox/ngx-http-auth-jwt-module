@@ -1,15 +1,16 @@
 #include "hashset.h"
-
-size_t fnv1a_hash(const char *cp);
+#include <ctype.h>
 
 size_t fnv1a_hash(const char *cp)
 {
     size_t hash = 0x811c9dc5;
+
     while (*cp)
     {
-        hash ^= (unsigned char)*cp++;
+        hash ^= (unsigned char)toupper(*cp++);
         hash *= 0x01000193;
     }
+
     return hash;
 }
 

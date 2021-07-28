@@ -1,9 +1,13 @@
 {
     "files.associations": {
+        "*.gpx": "xml",
         "ngx_http_auth_jwt_binary_converters.h": "c",
         "jansson.h": "c",
         "ngx_http.h": "c",
         "type_traits": "c",
-        "stdio.h": "c"
+        "stdio.h": "c",
+        "ngx_http_auth_jwt_string.h": "c",
+        "hashset.h": "c",
+        "ngx_core.h": "c"
     }
 }

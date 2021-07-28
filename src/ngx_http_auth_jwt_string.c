@@ -11,24 +11,24 @@
 #include "ngx_http_auth_jwt_string.h"
 
 /** copies an nginx string structure to a newly allocated character pointer */
-char* ngx_str_t_to_char_ptr(ngx_pool_t *pool, ngx_str_t str)
+char *ngx_str_t_to_char_ptr(ngx_pool_t *pool, ngx_str_t str)
 {
-	char* char_ptr = ngx_palloc(pool, str.len + 1);
+	char *char_ptr = ngx_palloc(pool, str.len + 1);
 	ngx_memcpy(char_ptr, str.data, str.len);
 	*(char_ptr + str.len) = '\0';
 	return char_ptr;
 }
 
-char* ngx_uchar_to_char_ptr(ngx_pool_t *pool, u_char* str, size_t len)
+char *ngx_uchar_to_char_ptr(ngx_pool_t *pool, u_char *str, size_t len)
 {
-	char* char_ptr = ngx_palloc(pool, len + 1);
+	char *char_ptr = ngx_palloc(pool, len + 1);
 	ngx_memcpy(char_ptr, str, len);
 	*(char_ptr + len) = '\0';
 	return char_ptr;
 }
 
 /** copies a character pointer string to an nginx string structure */
-ngx_str_t ngx_char_ptr_to_str_t(ngx_pool_t *pool, char* char_ptr)
+ngx_str_t ngx_char_ptr_to_str_t(ngx_pool_t *pool, char *char_ptr)
 {
 	size_t len = ngx_strlen(char_ptr);
 
@@ -37,4 +37,111 @@ ngx_str_t ngx_char_ptr_to_str_t(ngx_pool_t *pool, char* char_ptr)
 	ngx_memcpy(str_t.data, char_ptr, len);
 	str_t.len = len;
 	return str_t;
+}
+
+ngx_flag_t ngx_array_includes(ngx_array_t *array, const char *value)
+{
+	size_t i;
+	ngx_str_t *entry;
+
+	for (i = 0; i < array->nelts; i++)
+	{
+		entry = &((ngx_str_t *)array->elts)[i];
+
+		if (ngx_strcmp((u_char *)entry->data, (u_char *)value) == 0)
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+ngx_flag_t ngx_array_includes_insensitive(ngx_array_t *array, const char *value)
+{
+	size_t i;
+	ngx_str_t *entry;
+
+	for (i = 0; i < array->nelts; i++)
+	{
+		entry = &((ngx_str_t *)array->elts)[i];
+
+		if (ngx_strcasecmp((u_char *)entry->data, (u_char *)value) == 0)
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+size_t trim(char **value)
+{
+	size_t len;
+	char *start;
+	char *end;
+
+	start = *value;
+	len = ngx_strlen(start);
+
+	if (len == 0)
+	{
+		return 0;
+	}
+
+	while (isspace(*start))
+	{
+		start++;
+		len--;
+	}
+
+	end = start + len;
+	while (end > start && isspace(*end))
+	{
+		end--;
+		len--;
+	}
+
+	end[1] = '\0';
+	*value = start;
+	return len;
+}
+
+ngx_int_t ngx_str_split(ngx_str_t *value, ngx_array_t *result, const char *separator)
+{
+	char *token;
+	char *context;
+	size_t len;
+	ngx_str_t *entry;
+
+	if (value->len > 0)
+	{
+		context = NULL;
+		token = strtok_r((char *)value->data, separator, &context);
+
+		if (token == NULL)
+		{
+			return NGX_OK;
+		}
+
+		do
+		{
+			len = trim(&token);
+			if (len > 0)
+			{
+				entry = (ngx_str_t *)ngx_array_push(result);
+				if (entry == NULL)
+				{
+					return NGX_ERROR;
+				}
+
+				entry->len = len;
+				entry->data = (u_char *)token;
+			}
+
+			token = strtok_r(NULL, separator, &context);
+		} while (token != NULL);
+	}
+
+	return NGX_OK;
 }

@@ -21,14 +21,26 @@
 #include <stdio.h>
 #include "hashset.h"
 
-static const char *KEY_FILE_PATH = "/app/pub_key";
-
 typedef char *(*ngx_http_auth_jwt_access_pt)(ngx_http_request_t *r, ngx_str_t *context);
+
+typedef enum
+{
+	ACCESS_TYPE_ALLOW = 0,
+	ACCESS_TYPE_DENY = 1
+} ngx_http_auth_jwt_policy_access_type_t;
 
 typedef struct
 {
-	ngx_array_t roles;
-} ngx_http_auth_jwt_roles_t;
+	ngx_array_t *users;
+	ngx_array_t *roles;
+} ngx_http_auth_jwt_policy_t;
+
+typedef struct
+{
+	ngx_str_t grant;
+	ngx_str_t header;
+	ngx_flag_t replace;
+} ngx_http_auth_jwt_grant_mapping_t;
 
 typedef struct
 {
@@ -42,13 +54,11 @@ typedef struct
 	ngx_flag_t enabled;
 	ngx_str_t validation_type;
 	ngx_str_t algorithm;
-	ngx_flag_t use_keyfile;
 	ngx_str_t keyfile_path;
-	ngx_flag_t validate_roles;
 	ngx_str_t name_grant;
 	ngx_str_t role_grant;
-	ngx_array_t *required_roles_source;
-	ngx_array_t *required_roles;
+	ngx_array_t *policies;
+	ngx_array_t *grant_header_mappings;
 	ngx_str_t key;
 	ngx_http_auth_jwt_accessor_t jwt_accessor;
 
@@ -56,14 +66,17 @@ typedef struct
 
 static ngx_int_t ngx_http_auth_jwt_init(ngx_conf_t *cf);
 static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r);
+static ngx_int_t ngx_http_auth_set_headers(ngx_http_request_t *r, jwt_t *jwt, ngx_http_auth_jwt_loc_conf_t *jwt_cf);
 static void *ngx_http_auth_jwt_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
-static ngx_int_t ngx_http_auth_jwt_init_roles(ngx_conf_t *cf, ngx_http_auth_jwt_loc_conf_t *conf);
 static char *get_jwt_from_header(ngx_http_request_t *r, ngx_str_t *context);
 static char *get_jwt_from_cookie(ngx_http_request_t *r, ngx_str_t *context);
 static char *get_jwt_from_url(ngx_http_request_t *r, ngx_str_t *context);
-static ngx_flag_t matches_jwt_roles(json_t *json_roles, size_t json_roles_count, ngx_array_t *required_roles);
-static ngx_flag_t validate_jwt_token_roles(ngx_http_request_t *r, const char *token_roles, ngx_array_t *required_roles_source);
+static ngx_flag_t matches_jwt_policy_n(const char *user, json_t *json_roles, size_t json_roles_count, ngx_array_t *policies);
+static ngx_flag_t matches_jwt_policy(const char *user, const char *role, ngx_array_t *policies);
+static ngx_flag_t validate_jwt_token_policies(ngx_http_request_t *r, jwt_t *jwt, ngx_http_auth_jwt_loc_conf_t *jwt_cf);
+static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *ngx_http_auth_jwt_add_grant_header_mapping(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 static ngx_command_t ngx_http_auth_jwt_commands[] = {
 	{ngx_string("auth_jwt_key"),
@@ -78,13 +91,6 @@ static ngx_command_t ngx_http_auth_jwt_commands[] = {
 	 ngx_conf_set_flag_slot,
 	 NGX_HTTP_LOC_CONF_OFFSET,
 	 offsetof(ngx_http_auth_jwt_loc_conf_t, enabled),
-	 NULL},
-
-	{ngx_string("auth_jwt_use_keyfile"),
-	 NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
-	 ngx_conf_set_flag_slot,
-	 NGX_HTTP_LOC_CONF_OFFSET,
-	 offsetof(ngx_http_auth_jwt_loc_conf_t, use_keyfile),
 	 NULL},
 
 	{ngx_string("auth_jwt_keyfile_path"),
@@ -108,13 +114,6 @@ static ngx_command_t ngx_http_auth_jwt_commands[] = {
 	 offsetof(ngx_http_auth_jwt_loc_conf_t, algorithm),
 	 NULL},
 
-	{ngx_string("auth_jwt_validate_roles"),
-	 NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
-	 ngx_conf_set_flag_slot,
-	 NGX_HTTP_LOC_CONF_OFFSET,
-	 offsetof(ngx_http_auth_jwt_loc_conf_t, validate_roles),
-	 NULL},
-
 	{ngx_string("auth_jwt_name_grant"),
 	 NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
 	 ngx_conf_set_str_slot,
@@ -129,11 +128,18 @@ static ngx_command_t ngx_http_auth_jwt_commands[] = {
 	 offsetof(ngx_http_auth_jwt_loc_conf_t, role_grant),
 	 NULL},
 
-	{ngx_string("auth_jwt_required_role"),
-	 NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
-	 ngx_conf_set_str_array_slot,
+	{ngx_string("auth_jwt_policy"),
+	 NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE23,
+	 ngx_http_auth_jwt_add_policy,
 	 NGX_HTTP_LOC_CONF_OFFSET,
-	 offsetof(ngx_http_auth_jwt_loc_conf_t, required_roles_source),
+	 offsetof(ngx_http_auth_jwt_loc_conf_t, policies),
+	 NULL},
+
+	{ngx_string("auth_jwt_grant_header_mapping"),
+	 NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE23,
+	 ngx_http_auth_jwt_add_grant_header_mapping,
+	 NGX_HTTP_LOC_CONF_OFFSET,
+	 offsetof(ngx_http_auth_jwt_loc_conf_t, grant_header_mappings),
 	 NULL},
 
 	ngx_null_command};
@@ -168,21 +174,15 @@ ngx_module_t ngx_http_auth_jwt_module = {
 
 static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 {
-	char *jwt_value;
-	//char *return_url;
-	ngx_http_auth_jwt_loc_conf_t *jwt_cf;
 	jwt_t *jwt = NULL;
+	char *jwt_value;
+	ngx_http_auth_jwt_loc_conf_t *jwt_cf;
 	int jwt_parse_result;
 	jwt_alg_t alg;
-	const char *sub;
-	const char *roles;
-	ngx_str_t sub_t;
 	time_t exp;
 	time_t now;
-	ngx_str_t x_user_id_header = ngx_string("x-userid");
 
 	jwt_cf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
-
 	if (!jwt_cf->enabled)
 	{
 		return NGX_DECLINED;
@@ -226,26 +226,16 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 		goto redirect;
 	}
 
-	// extract the userid
-	sub = jwt_get_grant(jwt, (const char *)jwt_cf->name_grant.data);
-	if (sub == NULL)
+	if (validate_jwt_token_policies(r, jwt, jwt_cf) == 0)
 	{
-		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "the jwt does not contain a subject");
-	}
-	else
-	{
-		sub_t = ngx_char_ptr_to_str_t(r->pool, (char *)sub);
-		set_custom_header_in_headers_out(r, &x_user_id_header, &sub_t);
+		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "jwt policy validation failed");
+		goto redirect;
 	}
 
-	if (jwt_cf->validate_roles == 1 && jwt_cf->required_roles->nelts > 0)
+	if (ngx_http_auth_set_headers(r, jwt, jwt_cf) == 0)
 	{
-		roles = jwt_get_grants_json(jwt, (const char *)jwt_cf->role_grant.data);
-		if (roles == NULL || validate_jwt_token_roles(r, roles, jwt_cf->required_roles) == 0)
-		{
-			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "jwt roles validation failed");
-			goto redirect;
-		}
+		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "an error occurred mapping grants");
+		goto redirect;
 	}
 
 	jwt_free(jwt);
@@ -290,9 +280,8 @@ static void *ngx_http_auth_jwt_create_loc_conf(ngx_conf_t *cf)
 
 	// set the flag to unset
 	conf->enabled = (ngx_flag_t)-1;
-	conf->use_keyfile = (ngx_flag_t)-1;
-	conf->validate_roles = (ngx_flag_t)-1;
-	conf->required_roles_source = NGX_CONF_UNSET_PTR;
+	conf->policies = NGX_CONF_UNSET_PTR;
+	conf->grant_header_mappings = NGX_CONF_UNSET_PTR;
 
 	ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0, "Created Location Configuration");
 
@@ -301,44 +290,21 @@ static void *ngx_http_auth_jwt_create_loc_conf(ngx_conf_t *cf)
 
 static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
-	ngx_int_t rc;
 	ngx_http_auth_jwt_loc_conf_t *prev = parent;
 	ngx_http_auth_jwt_loc_conf_t *conf = child;
 
 	ngx_conf_merge_str_value(conf->key_source, prev->key_source, "");
 	ngx_conf_merge_str_value(conf->validation_type, prev->validation_type, "");
 	ngx_conf_merge_str_value(conf->algorithm, prev->algorithm, "HS256");
-	ngx_conf_merge_str_value(conf->keyfile_path, prev->keyfile_path, KEY_FILE_PATH);
+	ngx_conf_merge_str_value(conf->keyfile_path, prev->keyfile_path, "");
 	ngx_conf_merge_str_value(conf->name_grant, prev->name_grant, "sub");
 	ngx_conf_merge_str_value(conf->role_grant, prev->role_grant, "role");
-	ngx_conf_merge_ptr_value(conf->required_roles_source, prev->required_roles_source, NULL);
+	ngx_conf_merge_ptr_value(conf->policies, prev->policies, NULL);
+	ngx_conf_merge_ptr_value(conf->grant_header_mappings, prev->grant_header_mappings, NULL);
 
 	if (conf->enabled == ((ngx_flag_t)-1))
 	{
 		conf->enabled = (prev->enabled == ((ngx_flag_t)-1)) ? 0 : prev->enabled;
-	}
-
-	if (conf->use_keyfile == ((ngx_flag_t)-1))
-	{
-		conf->use_keyfile = (prev->use_keyfile == ((ngx_flag_t)-1)) ? 0 : prev->use_keyfile;
-	}
-
-	if (conf->validate_roles == ((ngx_flag_t)-1))
-	{
-		conf->validate_roles = (prev->validate_roles == ((ngx_flag_t)-1)) ? 0 : prev->validate_roles;
-	}
-
-	if (conf->required_roles_source == prev->required_roles_source)
-	{
-		conf->required_roles = prev->required_roles;
-	}
-	else
-	{
-		rc = ngx_http_auth_jwt_init_roles(cf, conf);
-		if (rc != NGX_OK)
-		{
-			return NGX_CONF_ERROR;
-		}
 	}
 
 	// convert key from hex to binary, if a symmetric key
@@ -356,7 +322,7 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 	else if (conf->algorithm.len == sizeof("RS256") - 1 && ngx_strncmp(conf->algorithm.data, "RS256", sizeof("RS256") - 1) == 0)
 	{
 		// in this case, 'Binary' is a misnomer, as it is the public key string itself
-		if (conf->use_keyfile == 1)
+		if (conf->keyfile_path.len > 0)
 		{
 			FILE *file = fopen((const char *)conf->keyfile_path.data, "rb");
 
@@ -475,67 +441,179 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 	return NGX_CONF_OK;
 }
 
-static ngx_int_t ngx_http_auth_jwt_init_roles(ngx_conf_t *cf, ngx_http_auth_jwt_loc_conf_t *conf)
+static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-	ngx_uint_t i;
-	ngx_http_auth_jwt_roles_t *roles;
-	ngx_str_t *role;
-	char *token;
-	char *context;
+	size_t i;
+	ngx_str_t *sAccessType;
+	ngx_array_t **policies;
+	ngx_array_t *users = NULL;
+	ngx_array_t *roles = NULL;
+	ngx_http_auth_jwt_policy_t *policy;
+	ngx_http_auth_jwt_policy_access_type_t accessType;
 
-	conf->required_roles = ngx_array_create(cf->pool, 1, sizeof(ngx_http_auth_jwt_roles_t));
-	if (conf->required_roles == NULL)
-	{
-		return NGX_ERROR;
-	}
+	policies = (ngx_array_t **)((char *)conf + cmd->offset);
 
-	if (conf->required_roles_source)
+	if (*policies == NGX_CONF_UNSET_PTR)
 	{
-		for (i = 0; i < conf->required_roles_source->nelts; i++)
+		*policies = ngx_array_create(cf->pool, 1, sizeof(ngx_http_auth_jwt_policy_t));
+		if (*policies == NULL)
 		{
-			role = &((ngx_str_t *)conf->required_roles_source->elts)[i];
-			if (role && role->len > 0)
-			{
-				context = NULL;
-				token = strtok_r((char *)role->data, " ", &context);
-
-				if (token == NULL)
-				{
-					continue;
-				}
-
-				roles = (ngx_http_auth_jwt_roles_t *)ngx_array_push(conf->required_roles);
-				if (roles == NULL)
-				{
-					return NGX_ERROR;
-				}
-
-				if (ngx_array_init(&roles->roles, cf->pool, 1, sizeof(ngx_str_t)) != NGX_OK)
-				{
-					return NGX_ERROR;
-				}
-
-				do
-				{
-					role = (ngx_str_t *)ngx_array_push(&roles->roles);
-					if (role == NULL)
-					{
-						return NGX_ERROR;
-					}
-
-					role->len = ngx_strlen(token);
-					role->data = ngx_palloc(cf->pool, role->len + 1);
-					ngx_memcpy(role->data, token, role->len + 1);
-
-					ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0, "Found role %s for policy %d", token, i);
-
-					token = strtok_r(NULL, " ", &context);
-				} while (token != NULL);
-			}
+			return NGX_CONF_ERROR;
 		}
 	}
 
-	return NGX_OK;
+	sAccessType = &((ngx_str_t *)cf->args->elts)[1];
+	if (sAccessType->len == 0 || ngx_strcasecmp(sAccessType->data, (u_char *)"allow") == 0)
+	{
+		accessType = ACCESS_TYPE_ALLOW;
+	}
+	else if (ngx_strcasecmp(sAccessType->data, (u_char *)"deny") == 0)
+	{
+		accessType = ACCESS_TYPE_DENY;
+	}
+	else
+	{
+		ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+						   "invalid value \"%s\" in \"%s\" directive, "
+						   "it must be \"allow\" or \"deny\"",
+						   sAccessType->data, cmd->name.data);
+		return NGX_CONF_ERROR;
+	}
+
+	users = ngx_array_create(cf->pool, 1, sizeof(ngx_str_t));
+	if (users == NULL)
+	{
+		goto error;
+	}
+
+	if (ngx_str_split(&((ngx_str_t *)cf->args->elts)[2], users, ",") != NGX_OK)
+	{
+		goto error;
+	}
+
+	roles = ngx_array_create(cf->pool, 1, sizeof(ngx_str_t));
+	if (roles == NULL)
+	{
+		goto error;
+	}
+
+	if (cf->args->nelts == 4)
+	{
+		if (ngx_str_split(&((ngx_str_t *)cf->args->elts)[3], roles, ",") != NGX_OK)
+		{
+			goto error;
+		}
+	}
+
+	//Check for empry policy
+	if (users->nelts == 0 && roles->nelts == 0)
+	{
+		ngx_array_destroy(users);
+		ngx_array_destroy(roles);
+		return NGX_CONF_OK;
+	}
+
+	policy = (ngx_http_auth_jwt_policy_t *)ngx_array_push(*policies);
+	if (policy == NULL)
+	{
+		goto error;
+	}
+
+	ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "found valid policy (%d) for users (%d) and roles (%d)", accessType, users->nelts, roles->nelts);
+
+	for (i = 0; i < users->nelts; i++)
+	{
+		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "users (%s) is allowed", ((ngx_str_t *)users->elts)[i].data);
+	}
+
+	for (i = 0; i < roles->nelts; i++)
+	{
+		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "role (%s) is allowed", ((ngx_str_t *)roles->elts)[i].data);
+	}
+
+	policy->users = users;
+	policy->roles = roles;
+	return NGX_CONF_OK;
+
+error:
+	if (users != NULL)
+	{
+		ngx_array_destroy(users);
+	}
+
+	if (roles != NULL)
+	{
+		ngx_array_destroy(roles);
+	}
+
+	return NGX_CONF_ERROR;
+}
+
+static char *ngx_http_auth_jwt_add_grant_header_mapping(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+	ngx_str_t *grant;
+	ngx_str_t *header;
+	ngx_str_t *replace;
+	ngx_array_t **mappings;
+	ngx_http_auth_jwt_grant_mapping_t *mapping;
+
+	mappings = (ngx_array_t **)((char *)conf + cmd->offset);
+
+	if (*mappings == NGX_CONF_UNSET_PTR)
+	{
+		*mappings = ngx_array_create(cf->pool, 1, sizeof(ngx_http_auth_jwt_policy_t));
+		if (*mappings == NULL)
+		{
+			return NGX_CONF_ERROR;
+		}
+	}
+
+	grant = &((ngx_str_t *)cf->args->elts)[1];
+	header = &((ngx_str_t *)cf->args->elts)[2];
+	if (grant->len > 0 && header->len > 0)
+	{
+		mapping = (ngx_http_auth_jwt_grant_mapping_t *)ngx_array_push(*mappings);
+		if (mapping == NULL)
+		{
+			return NGX_CONF_ERROR;
+		}
+
+		mapping->grant = *grant;
+		mapping->header = *header;
+
+		if (cf->args->nelts == 4)
+		{
+			replace = &((ngx_str_t *)cf->args->elts)[3];
+			if (replace->len == 0)
+			{
+				mapping->replace = 1;
+			}
+			else if (ngx_strcasecmp(replace->data, (u_char *)"on") == 0)
+			{
+				mapping->replace = 1;
+			}
+			else if (ngx_strcasecmp(replace->data, (u_char *)"off") == 0)
+			{
+				mapping->replace = 0;
+			}
+			else
+			{
+				ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+								   "invalid value \"%s\" in \"%s\" directive, "
+								   "it must be \"on\" or \"off\"",
+								   replace->data, cmd->name.data);
+				return NGX_CONF_ERROR;
+			}
+		}
+		else
+		{
+			mapping->replace = 1;
+		}
+
+		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "found valid mapping for grant (%s) and header (%s)", grant->data, header->data);
+	}
+
+	return NGX_CONF_OK;
 }
 
 static char *get_jwt_from_header(ngx_http_request_t *r, ngx_str_t *context)
@@ -601,12 +679,61 @@ static char *get_jwt_from_url(ngx_http_request_t *r, ngx_str_t *context)
 	return NULL;
 }
 
-static ngx_flag_t matches_jwt_roles(json_t *json_roles, size_t json_roles_count, ngx_array_t *required_roles)
+static ngx_flag_t matches_jwt_policy(const char *user, const char *role, ngx_array_t *policies)
+{
+	size_t i;
+	ngx_http_auth_jwt_policy_t *policy;
+
+	if (role == NULL)
+	{
+		for (i = 0; i < policies->nelts; i++)
+		{
+			policy = &((ngx_http_auth_jwt_policy_t *)policies->elts)[i];
+
+			if (policy->users->nelts > 0)
+			{
+				if (user == NULL || ngx_array_includes_insensitive(policy->users, user) == 0)
+				{
+					return 0;
+				}
+			}
+
+			if (policy->roles->nelts == 0)
+			{
+				return 1;
+			}
+		}
+	}
+	else
+	{
+		for (i = 0; i < policies->nelts; i++)
+		{
+			policy = &((ngx_http_auth_jwt_policy_t *)policies->elts)[i];
+
+			if (policy->users->nelts > 0)
+			{
+				if (user == NULL || ngx_array_includes_insensitive(policy->users, user) == 0)
+				{
+					return 0;
+				}
+			}
+
+			if (policy->roles->nelts == 1 && ngx_strcasecmp(((ngx_str_t *)policy->roles->elts)[0].data, (u_char *)role) == 0)
+			{
+				return 1;
+			}
+		}
+	}
+
+	return 0;
+}
+
+static ngx_flag_t matches_jwt_policy_n(const char *user, json_t *json_roles, size_t json_roles_count, ngx_array_t *policies)
 {
 	ngx_flag_t result;
 	size_t i, j;
 	const char *role;
-	ngx_http_auth_jwt_roles_t *jwt_roles;
+	ngx_http_auth_jwt_policy_t *policy;
 
 	hashset_t hashset;
 	hashset.nentries = 0;
@@ -637,17 +764,26 @@ static ngx_flag_t matches_jwt_roles(json_t *json_roles, size_t json_roles_count,
 		hashset_add(&hashset, role);
 	}
 
-	for (i = 0; i < required_roles->nelts;)
+	for (i = 0; i < policies->nelts;)
 	{
-		jwt_roles = &((ngx_http_auth_jwt_roles_t *)required_roles->elts)[i];
-		if (jwt_roles->roles.nelts != json_roles_count)
+		policy = &((ngx_http_auth_jwt_policy_t *)policies->elts)[i];
+
+		if (policy->users->nelts > 0)
+		{
+			if (user == NULL || ngx_array_includes_insensitive(policy->users, user) == 0)
+			{
+				goto next_policy;
+			}
+		}
+
+		if (policy->roles->nelts != json_roles_count)
 		{
 			goto next_policy;
 		}
 
-		for (j = 0; j < jwt_roles->roles.nelts;)
+		for (j = 0; j < policy->roles->nelts;)
 		{
-			if (hashset_contains(&hashset, (const char *)((ngx_str_t *)jwt_roles->roles.elts)[j].data))
+			if (hashset_contains(&hashset, (const char *)((ngx_str_t *)policy->roles->elts)[j].data))
 			{
 				goto next_role;
 			}
@@ -677,13 +813,21 @@ end:
 	return result;
 }
 
-static ngx_flag_t validate_jwt_token_roles(ngx_http_request_t *r, const char *token_roles, ngx_array_t *required_roles)
+static ngx_flag_t validate_jwt_token_policies(ngx_http_request_t *r, jwt_t *jwt, ngx_http_auth_jwt_loc_conf_t *jwt_cf)
 {
-	const char *role;
+	const char *user;
+	const char *token_roles;
 	json_t *json_roles;
 	json_error_t error;
-	size_t i, json_roles_count;
-	ngx_http_auth_jwt_roles_t *jwt_roles;
+	size_t json_roles_count;
+
+	if (jwt_cf->policies == NULL || jwt_cf->policies->nelts == 0)
+	{
+		return 1;
+	}
+
+	user = jwt_get_grant(jwt, (const char *)jwt_cf->name_grant.data);
+	token_roles = jwt_get_grants_json(jwt, (const char *)jwt_cf->role_grant.data);
 
 	json_roles = json_loads(token_roles, JSON_DECODE_ANY | JSON_DISABLE_EOF_CHECK, &error);
 	if (json_roles != NULL)
@@ -693,22 +837,14 @@ static ngx_flag_t validate_jwt_token_roles(ngx_http_request_t *r, const char *to
 			json_roles_count = json_array_size(json_roles);
 			if (json_roles_count == 1)
 			{
-				role = json_string_value(json_array_get(json_roles, 0));
-				if (role != NULL)
+				if (matches_jwt_policy(user, json_string_value(json_array_get(json_roles, 0)), jwt_cf->policies))
 				{
-					for (i = 0; i < required_roles->nelts; i++)
-					{
-						jwt_roles = &((ngx_http_auth_jwt_roles_t *)required_roles->elts)[i];
-						if (jwt_roles->roles.nelts == 1 && ngx_strcasecmp(((ngx_str_t *)jwt_roles->roles.elts)[0].data, (u_char *)role) == 0)
-						{
-							goto success;
-						}
-					}
+					goto success;
 				}
 			}
 			else if (json_roles_count > 0)
 			{
-				if (matches_jwt_roles(json_roles, json_roles_count, required_roles))
+				if (matches_jwt_policy_n(user, json_roles, json_roles_count, jwt_cf->policies))
 				{
 					goto success;
 				}
@@ -716,17 +852,9 @@ static ngx_flag_t validate_jwt_token_roles(ngx_http_request_t *r, const char *to
 		}
 		else if (json_is_string(json_roles))
 		{
-			role = json_string_value(json_roles);
-			if (role != NULL)
+			if (matches_jwt_policy(user, json_string_value(json_roles), jwt_cf->policies))
 			{
-				for (i = 0; i < required_roles->nelts; i++)
-				{
-					jwt_roles = &((ngx_http_auth_jwt_roles_t *)required_roles->elts)[i];
-					if (jwt_roles->roles.nelts == 1 && ngx_strcasecmp(((ngx_str_t *)jwt_roles->roles.elts)[0].data, (u_char *)role) == 0)
-					{
-						goto success;
-					}
-				}
+				goto success;
 			}
 		}
 
@@ -734,12 +862,49 @@ static ngx_flag_t validate_jwt_token_roles(ngx_http_request_t *r, const char *to
 	}
 	else
 	{
-		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, error.text);
+		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "an error occurred validating authorization policies: %s", error.text);
 	}
 
 	return 0;
 
 success:
 	json_decref(json_roles);
+	return 1;
+}
+
+static ngx_int_t ngx_http_auth_set_headers(ngx_http_request_t *r, jwt_t *jwt, ngx_http_auth_jwt_loc_conf_t *jwt_cf)
+{
+	const char *grant;
+	ngx_str_t grant_t;
+	size_t i;
+	ngx_http_auth_jwt_grant_mapping_t *mapping;
+
+	if (jwt_cf->grant_header_mappings == NULL || jwt_cf->grant_header_mappings->nelts == 0)
+	{
+		return 1;
+	}
+
+	for (i = 0; i < jwt_cf->grant_header_mappings->nelts; i++)
+	{
+		mapping = &((ngx_http_auth_jwt_grant_mapping_t *)jwt_cf->grant_header_mappings->elts)[i];
+
+		grant = jwt_get_grant(jwt, (const char *)mapping->grant.data);
+		if (grant == NULL)
+		{
+			continue;
+		}
+
+		grant_t = ngx_char_ptr_to_str_t(r->pool, (char *)grant);
+		if (grant_t.data == NULL)
+		{
+			return 0;
+		}
+
+		if (set_custom_header_in_headers_out(r, &mapping->header, &grant_t) != NGX_OK)
+		{
+			return 0;
+		}
+	}
+
 	return 1;
 }
