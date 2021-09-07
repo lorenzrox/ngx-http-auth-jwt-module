@@ -478,7 +478,6 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 
 static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-	size_t i;
 	ngx_str_t *sAccessType;
 	ngx_array_t **policies;
 	ngx_array_t *users = NULL;
@@ -559,6 +558,8 @@ static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, vo
 	}
 
 #if NGX_DEBUG
+	size_t i;
+
 	ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "found valid policy (%d) for users (%d) and roles (%d)", accessType, users->nelts, roles->nelts);
 
 	if (accessType == ACCESS_TYPE_ALLOW)
