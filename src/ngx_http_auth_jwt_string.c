@@ -119,7 +119,7 @@ ngx_int_t ngx_str_split(ngx_str_t *value, ngx_array_t *result, const char *separ
 	size_t len;
 	ngx_str_t *entry;
 	char *nextToken;
-	char *token = (char *)value->data;
+	char *token;
 	size_t separatorLen = strlen(separator);
 
 	if (value->len > 0)
@@ -134,26 +134,30 @@ ngx_int_t ngx_str_split(ngx_str_t *value, ngx_array_t *result, const char *separ
 
 			*entry = *value;
 		}
-
-		do
+		else
 		{
-			nextToken = ngx_strstr(token, separator);
-			len = trim(&token, nextToken);
+			token = (char *)value->data;
 
-			if (len > 0)
+			do
 			{
-				entry = (ngx_str_t *)ngx_array_push(result);
-				if (entry == NULL)
+				nextToken = ngx_strstr(token, separator);
+				len = trim(&token, nextToken);
+
+				if (len > 0)
 				{
-					return NGX_ERROR;
+					entry = (ngx_str_t *)ngx_array_push(result);
+					if (entry == NULL)
+					{
+						return NGX_ERROR;
+					}
+
+					entry->len = len;
+					entry->data = (u_char *)token;
 				}
 
-				entry->len = len;
-				entry->data = (u_char *)token;
-			}
-
-			token = nextToken + separatorLen;
-		} while (nextToken != NULL);
+				token = nextToken + separatorLen;
+			} while (nextToken != NULL);
+		}
 	}
 
 	return NGX_OK;
@@ -163,21 +167,25 @@ ngx_int_t ngx_str_join(ngx_array_t *value, ngx_str_t *result, const char *separa
 {
 	size_t i;
 	ngx_str_t *element;
-	size_t offset = 0;
-	size_t separatorLen = ngx_strlen(separator);
+	size_t offset;
+	size_t separatorLen;
 
 	if (result->len > 0)
 	{
+		offset = 0;
+		separatorLen = ngx_strlen(separator);
+
 		for (i = 0; i < value->nelts; i++)
 		{
 			element = &((ngx_str_t *)value->elts)[i];
-
 			if (offset + element->len + separatorLen >= result->len)
 			{
 				break;
 			}
 
+			ngx_memcpy(result->data + offset, element->data, element->len);
 			offset += element->len;
+
 			ngx_memcpy(result->data + offset, separator, separatorLen);
 			offset += separatorLen;
 		}

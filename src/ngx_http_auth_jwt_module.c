@@ -588,6 +588,13 @@ static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, vo
 			ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "role (%s) is denied", ((ngx_str_t *)roles->elts)[i].data);
 		}
 	}
+
+	printf("%s\n", ((ngx_str_t *)cf->args->elts)[2].data);
+
+	if (cf->args->nelts == 4)
+	{
+		printf("%s\n", ((ngx_str_t *)cf->args->elts)[3].data);
+	}
 #endif
 
 	policy->access_type = accessType;
