@@ -7,6 +7,8 @@
  * https://github.com/TeslaGov/ngx-http-auth-jwt-module
  */
 
+#define NGX_DEBUG 1
+
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -31,6 +33,7 @@ typedef enum
 
 typedef struct
 {
+	ngx_http_auth_jwt_policy_access_type_t access_type;
 	ngx_array_t *users;
 	ngx_array_t *roles;
 } ngx_http_auth_jwt_policy_t;
@@ -64,6 +67,7 @@ typedef struct
 
 } ngx_http_auth_jwt_loc_conf_t;
 
+static void ngx_log_policy(ngx_uint_t level, ngx_log_t *log, ngx_err_t err, ngx_http_auth_jwt_policy_t *policy);
 static ngx_int_t ngx_http_auth_jwt_init(ngx_conf_t *cf);
 static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_auth_set_headers(ngx_http_request_t *r, jwt_t *jwt, ngx_http_auth_jwt_loc_conf_t *jwt_cf);
@@ -72,8 +76,8 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 static char *get_jwt_from_header(ngx_http_request_t *r, ngx_str_t *context);
 static char *get_jwt_from_cookie(ngx_http_request_t *r, ngx_str_t *context);
 static char *get_jwt_from_url(ngx_http_request_t *r, ngx_str_t *context);
-static ngx_flag_t matches_jwt_policy_n(const char *user, json_t *json_roles, size_t json_roles_count, ngx_array_t *policies);
-static ngx_flag_t matches_jwt_policy(const char *user, const char *role, ngx_array_t *policies);
+static ngx_flag_t matches_jwt_policy_n(ngx_http_request_t *r, const char *user, json_t *json_roles, size_t json_roles_count, ngx_array_t *policies);
+static ngx_flag_t matches_jwt_policy(ngx_http_request_t *r, const char *user, const char *role, ngx_array_t *policies);
 static ngx_flag_t validate_jwt_token_policies(ngx_http_request_t *r, jwt_t *jwt, ngx_http_auth_jwt_loc_conf_t *jwt_cf);
 static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_jwt_add_grant_header_mapping(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
@@ -172,6 +176,36 @@ ngx_module_t ngx_http_auth_jwt_module = {
 	NULL,						   /* exit master */
 	NGX_MODULE_V1_PADDING};
 
+static void ngx_log_policy(ngx_uint_t level, ngx_log_t *log, ngx_err_t err, ngx_http_auth_jwt_policy_t *policy)
+{
+	char *type;
+	char users[NGX_MAX_ERROR_STR];
+	char roles[NGX_MAX_ERROR_STR];
+
+	if (policy->access_type == ACCESS_TYPE_ALLOW)
+	{
+		type = "allow";
+	}
+	else
+	{
+		type = "deny";
+	}
+
+	ngx_memzero(users, sizeof(users));
+	ngx_memzero(roles, sizeof(roles));
+
+	ngx_str_t str;
+	str.len = NGX_MAX_ERROR_STR;
+
+	str.data = (u_char *)users;
+	ngx_str_join(policy->users, &str, ",");
+
+	str.data = (u_char *)roles;
+	ngx_str_join(policy->roles, &str, ",");
+
+	ngx_log_error(level, log, err, "validating policy with type=%s, users=[%s], roles=[%s]", type, users, roles);
+}
+
 static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 {
 	jwt_t *jwt = NULL;
@@ -198,7 +232,7 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 	if (jwt_value == NULL)
 	{
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to find a jwt");
-		goto redirect;
+		goto unauthorized;
 	}
 
 	// validate the jwt
@@ -206,7 +240,7 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 	if (jwt_parse_result != 0)
 	{
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to parse jwt (%d)", jwt_parse_result);
-		goto redirect;
+		goto unauthorized;
 	}
 
 	// validate the algorithm
@@ -214,7 +248,7 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 	if (alg != JWT_ALG_HS256 && alg != JWT_ALG_RS256)
 	{
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "invalid algorithm in jwt %d", alg);
-		goto redirect;
+		goto unauthorized;
 	}
 
 	// validate the exp date of the JWT
@@ -223,26 +257,30 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 	if (exp < now)
 	{
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "the jwt has expired");
-		goto redirect;
+		goto unauthorized;
 	}
+
+#if NGX_DEBUG
+	ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "found valid jwt token: %s", jwt_value);
+#endif
 
 	if (validate_jwt_token_policies(r, jwt, jwt_cf) == 0)
 	{
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "jwt policy validation failed");
-		goto redirect;
+		goto unauthorized;
 	}
 
 	if (ngx_http_auth_set_headers(r, jwt, jwt_cf) == 0)
 	{
 		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "an error occurred mapping grants");
-		goto redirect;
+		goto unauthorized;
 	}
 
 	jwt_free(jwt);
 
 	return NGX_OK;
 
-redirect:
+unauthorized:
 	if (jwt)
 	{
 		jwt_free(jwt);
@@ -505,7 +543,7 @@ static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, vo
 		}
 	}
 
-	//Check for empry policy
+	//Check for empty policy
 	if (users->nelts == 0 && roles->nelts == 0)
 	{
 		ngx_array_destroy(users);
@@ -531,11 +569,14 @@ static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, vo
 		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "role (%s) is allowed", ((ngx_str_t *)roles->elts)[i].data);
 	}
 
+	policy->access_type = accessType;
 	policy->users = users;
 	policy->roles = roles;
 	return NGX_CONF_OK;
 
 error:
+	ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "an error occurred creating the policy");
+
 	if (users != NULL)
 	{
 		ngx_array_destroy(users);
@@ -679,16 +720,24 @@ static char *get_jwt_from_url(ngx_http_request_t *r, ngx_str_t *context)
 	return NULL;
 }
 
-static ngx_flag_t matches_jwt_policy(const char *user, const char *role, ngx_array_t *policies)
+static ngx_flag_t matches_jwt_policy(ngx_http_request_t *r, const char *user, const char *role, ngx_array_t *policies)
 {
 	size_t i;
 	ngx_http_auth_jwt_policy_t *policy;
 
 	if (role == NULL)
 	{
+#if NGX_DEBUG
+		ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "validating policies against and role=%s", role);
+#endif
+
 		for (i = 0; i < policies->nelts; i++)
 		{
 			policy = &((ngx_http_auth_jwt_policy_t *)policies->elts)[i];
+
+#if NGX_DEBUG
+			ngx_log_policy(NGX_LOG_INFO, r->connection->log, 0, policy);
+#endif
 
 			if (policy->users->nelts > 0)
 			{
@@ -706,9 +755,17 @@ static ngx_flag_t matches_jwt_policy(const char *user, const char *role, ngx_arr
 	}
 	else
 	{
+#if NGX_DEBUG
+		ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "validating policies against user=%s and role=%s", user, role);
+#endif
+
 		for (i = 0; i < policies->nelts; i++)
 		{
 			policy = &((ngx_http_auth_jwt_policy_t *)policies->elts)[i];
+
+#if NGX_DEBUG
+			ngx_log_policy(NGX_LOG_INFO, r->connection->log, 0, policy);
+#endif
 
 			if (policy->users->nelts > 0)
 			{
@@ -728,7 +785,7 @@ static ngx_flag_t matches_jwt_policy(const char *user, const char *role, ngx_arr
 	return 0;
 }
 
-static ngx_flag_t matches_jwt_policy_n(const char *user, json_t *json_roles, size_t json_roles_count, ngx_array_t *policies)
+static ngx_flag_t matches_jwt_policy_n(ngx_http_request_t *r, const char *user, json_t *json_roles, size_t json_roles_count, ngx_array_t *policies)
 {
 	ngx_flag_t result;
 	size_t i, j;
@@ -741,8 +798,8 @@ static ngx_flag_t matches_jwt_policy_n(const char *user, json_t *json_roles, siz
 
 	if (json_roles_count > 1024)
 	{
-		hashset.buckets = (size_t *)malloc(json_roles_count * sizeof(size_t));
-		hashset.entries = (hashset_entry_t *)malloc(json_roles_count * sizeof(hashset_entry_t));
+		hashset.buckets = (size_t *)ngx_palloc(r->pool, json_roles_count * sizeof(size_t));
+		hashset.entries = (hashset_entry_t *)ngx_palloc(r->pool, json_roles_count * sizeof(hashset_entry_t));
 	}
 	else
 	{
@@ -761,12 +818,27 @@ static ngx_flag_t matches_jwt_policy_n(const char *user, json_t *json_roles, siz
 			continue;
 		}
 
+#if NGX_DEBUG
+		if (user == NULL)
+		{
+			ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "validating policies against and role=%s", role);
+		}
+		else
+		{
+			ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "validating policies against user=%s and role=%s", user, role);
+		}
+#endif
+
 		hashset_add(&hashset, role);
 	}
 
 	for (i = 0; i < policies->nelts;)
 	{
 		policy = &((ngx_http_auth_jwt_policy_t *)policies->elts)[i];
+
+#if NGX_DEBUG
+		ngx_log_policy(NGX_LOG_INFO, r->connection->log, 0, policy);
+#endif
 
 		if (policy->users->nelts > 0)
 		{
@@ -795,7 +867,7 @@ static ngx_flag_t matches_jwt_policy_n(const char *user, json_t *json_roles, siz
 		}
 
 		result = 1;
-		goto end;
+		goto exit;
 
 	next_policy:
 		i++;
@@ -803,11 +875,11 @@ static ngx_flag_t matches_jwt_policy_n(const char *user, json_t *json_roles, siz
 
 	result = 0;
 
-end:
+exit:
 	if (json_roles_count > 1024)
 	{
-		free(hashset.buckets);
-		free(hashset.entries);
+		ngx_pfree(r->pool, hashset.buckets);
+		ngx_pfree(r->pool, hashset.entries);
 	}
 
 	return result;
@@ -837,14 +909,14 @@ static ngx_flag_t validate_jwt_token_policies(ngx_http_request_t *r, jwt_t *jwt,
 			json_roles_count = json_array_size(json_roles);
 			if (json_roles_count == 1)
 			{
-				if (matches_jwt_policy(user, json_string_value(json_array_get(json_roles, 0)), jwt_cf->policies))
+				if (matches_jwt_policy(r, user, json_string_value(json_array_get(json_roles, 0)), jwt_cf->policies))
 				{
 					goto success;
 				}
 			}
 			else if (json_roles_count > 0)
 			{
-				if (matches_jwt_policy_n(user, json_roles, json_roles_count, jwt_cf->policies))
+				if (matches_jwt_policy_n(r, user, json_roles, json_roles_count, jwt_cf->policies))
 				{
 					goto success;
 				}
@@ -852,7 +924,7 @@ static ngx_flag_t validate_jwt_token_policies(ngx_http_request_t *r, jwt_t *jwt,
 		}
 		else if (json_is_string(json_roles))
 		{
-			if (matches_jwt_policy(user, json_string_value(json_roles), jwt_cf->policies))
+			if (matches_jwt_policy(r, user, json_string_value(json_roles), jwt_cf->policies))
 			{
 				goto success;
 			}

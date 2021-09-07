@@ -145,3 +145,39 @@ ngx_int_t ngx_str_split(ngx_str_t *value, ngx_array_t *result, const char *separ
 
 	return NGX_OK;
 }
+
+ngx_int_t ngx_str_join(ngx_array_t *value, ngx_str_t *result, const char *separator)
+{
+	size_t i;
+	ngx_str_t *element;
+	size_t offset = 0;
+	size_t separatorLen = ngx_strlen(separator);
+
+	if (result->len > 0)
+	{
+		for (i = 0; i < value->nelts; i++)
+		{
+			element = &((ngx_str_t *)value->elts)[i];
+
+			if (offset + element->len + separatorLen >= result->len)
+			{
+				break;
+			}
+
+			offset += element->len;
+			ngx_memcpy(result->data + offset, separator, separatorLen);
+			offset += separatorLen;
+		}
+
+		if (offset > separatorLen)
+		{
+			result->data[offset - separatorLen] = '\0';
+		}
+		else
+		{
+			result->data[0] = '\0';
+		}
+	}
+
+	return NGX_OK;
+}

@@ -18,5 +18,6 @@ char *ngx_uchar_to_char_ptr(ngx_pool_t *pool, u_char *str, size_t len);
 ngx_flag_t ngx_array_includes(ngx_array_t *array, const char *value);
 ngx_flag_t ngx_array_includes_insensitive(ngx_array_t *array, const char *value);
 ngx_int_t ngx_str_split(ngx_str_t *value, ngx_array_t *result, const char *separator);
+ngx_int_t ngx_str_join(ngx_array_t *value, ngx_str_t *result, const char *separator);
 
 #endif /* _NGX_HTTP_AUTH_JWT_STRING_H */
