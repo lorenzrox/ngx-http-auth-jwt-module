@@ -9,6 +9,7 @@
         "ngx_http_auth_jwt_string.h": "c",
         "hashset.h": "c",
         "ngx_core.h": "c",
-        "jwt.h": "c"
+        "jwt.h": "c",
+        "ngx_config.h": "c"
     }
 }

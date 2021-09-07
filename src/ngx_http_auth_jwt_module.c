@@ -7,8 +7,6 @@
  * https://github.com/TeslaGov/ngx-http-auth-jwt-module
  */
 
-#define NGX_DEBUG 1
-
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -67,7 +65,6 @@ typedef struct
 
 } ngx_http_auth_jwt_loc_conf_t;
 
-static void ngx_log_policy(ngx_uint_t level, ngx_log_t *log, ngx_err_t err, ngx_http_auth_jwt_policy_t *policy);
 static ngx_int_t ngx_http_auth_jwt_init(ngx_conf_t *cf);
 static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_auth_set_headers(ngx_http_request_t *r, jwt_t *jwt, ngx_http_auth_jwt_loc_conf_t *jwt_cf);
@@ -176,7 +173,7 @@ ngx_module_t ngx_http_auth_jwt_module = {
 	NULL,						   /* exit master */
 	NGX_MODULE_V1_PADDING};
 
-static void ngx_log_policy(ngx_uint_t level, ngx_log_t *log, ngx_err_t err, ngx_http_auth_jwt_policy_t *policy)
+inline static void ngx_log_policy(ngx_uint_t level, ngx_log_t *log, ngx_err_t err, ngx_http_auth_jwt_policy_t *policy)
 {
 	char *type;
 	char users[NGX_MAX_ERROR_STR];
@@ -481,7 +478,6 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 
 static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-	size_t i;
 	ngx_str_t *sAccessType;
 	ngx_array_t **policies;
 	ngx_array_t *users = NULL;
@@ -562,6 +558,8 @@ static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, vo
 	}
 
 #if NGX_DEBUG
+	size_t i;
+
 	ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "found valid policy (%d) for users (%d) and roles (%d)", accessType, users->nelts, roles->nelts);
 
 	if (accessType == ACCESS_TYPE_ALLOW)
@@ -869,7 +867,7 @@ static ngx_flag_t matches_jwt_policy_n(ngx_http_request_t *r, const char *user, 
 			}
 		}
 
-		if (policy->roles->nelts != json_roles_count)
+		if (policy->roles->nelts > json_roles_count)
 		{
 			goto next_policy;
 		}
