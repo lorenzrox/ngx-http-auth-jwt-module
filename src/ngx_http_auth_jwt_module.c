@@ -772,6 +772,10 @@ static ngx_flag_t matches_jwt_policy(ngx_http_request_t *r, const char *user, co
 
 			if (policy->roles->nelts == 0)
 			{
+#if NGX_DEBUG
+				ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "policy validation successful");
+#endif
+
 				return 1;
 			}
 		}
@@ -808,6 +812,7 @@ static ngx_flag_t matches_jwt_policy(ngx_http_request_t *r, const char *user, co
 				{
 #if NGX_DEBUG
 					ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "role '%s' found", ((ngx_str_t *)policy->roles->elts)[0].data);
+					ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "policy validation successful");
 #endif
 
 					return 1;
@@ -915,6 +920,10 @@ static ngx_flag_t matches_jwt_policy_n(ngx_http_request_t *r, const char *user, 
 		next_role:
 			j++;
 		}
+
+#if NGX_DEBUG
+		ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "policy validation successful");
+#endif
 
 		result = 1;
 		goto exit;
