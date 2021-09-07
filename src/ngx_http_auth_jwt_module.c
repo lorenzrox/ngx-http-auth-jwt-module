@@ -7,8 +7,6 @@
  * https://github.com/TeslaGov/ngx-http-auth-jwt-module
  */
 
-#define NGX_DEBUG 1
-
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -547,7 +545,7 @@ static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, vo
 	if (users->nelts == 0 && roles->nelts == 0)
 	{
 #if NGX_DEBUG
-		ngx_log_error(NGX_LOG_INFO, cf->log, 0, "found empty policy (%d)");
+		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "found empty policy (%d)");
 #endif
 
 		ngx_array_destroy(users);
@@ -562,30 +560,30 @@ static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, vo
 	}
 
 #if NGX_DEBUG
-	ngx_log_error(NGX_LOG_INFO, cf->log, 0, "found valid policy (%d) for users (%d) and roles (%d)", accessType, users->nelts, roles->nelts);
+	ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "found valid policy (%d) for users (%d) and roles (%d)", accessType, users->nelts, roles->nelts);
 
 	if (accessType == ACCESS_TYPE_ALLOW)
 	{
 		for (i = 0; i < users->nelts; i++)
 		{
-			ngx_log_error(NGX_LOG_INFO, cf->log, 0, "users (%s) is allowed", ((ngx_str_t *)users->elts)[i].data);
+			ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "users (%s) is allowed", ((ngx_str_t *)users->elts)[i].data);
 		}
 
 		for (i = 0; i < roles->nelts; i++)
 		{
-			ngx_log_error(NGX_LOG_INFO, cf->log, 0, "role (%s) is allowed", ((ngx_str_t *)roles->elts)[i].data);
+			ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "role (%s) is allowed", ((ngx_str_t *)roles->elts)[i].data);
 		}
 	}
 	else
 	{
 		for (i = 0; i < users->nelts; i++)
 		{
-			ngx_log_error(NGX_LOG_INFO, cf->log, 0, "users (%s) is denied", ((ngx_str_t *)users->elts)[i].data);
+			ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "users (%s) is denied", ((ngx_str_t *)users->elts)[i].data);
 		}
 
 		for (i = 0; i < roles->nelts; i++)
 		{
-			ngx_log_error(NGX_LOG_INFO, cf->log, 0, "role (%s) is denied", ((ngx_str_t *)roles->elts)[i].data);
+			ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "role (%s) is denied", ((ngx_str_t *)roles->elts)[i].data);
 		}
 	}
 #endif
@@ -869,7 +867,7 @@ static ngx_flag_t matches_jwt_policy_n(ngx_http_request_t *r, const char *user, 
 			}
 		}
 
-		if (policy->roles->nelts != json_roles_count)
+		if (policy->roles->nelts < json_roles_count)
 		{
 			goto next_policy;
 		}
