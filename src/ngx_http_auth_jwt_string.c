@@ -137,7 +137,7 @@ ngx_int_t ngx_str_split(ngx_str_t *value, ngx_array_t *result, const char *separ
 
 		do
 		{
-			nextToken = strstr(token, separator);
+			nextToken = ngx_strstr(token, separator);
 			len = trim(&token, nextToken);
 
 			if (len > 0)
