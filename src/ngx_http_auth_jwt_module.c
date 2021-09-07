@@ -867,7 +867,7 @@ static ngx_flag_t matches_jwt_policy_n(ngx_http_request_t *r, const char *user, 
 			}
 		}
 
-		if (policy->roles->nelts < json_roles_count)
+		if (policy->roles->nelts > json_roles_count)
 		{
 			goto next_policy;
 		}
