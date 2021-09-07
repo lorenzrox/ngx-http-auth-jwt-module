@@ -414,7 +414,7 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 		conf->jwt_accessor.context.data = (u_char *)"Authorization";
 		conf->jwt_accessor.context.len = sizeof("Authorization") - 1;
 
-		ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0, "Serching for jwt in header 'Authorization'");
+		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "Serching for jwt in header 'Authorization'");
 	}
 	else if (conf->validation_type.len >= (sizeof("HEADER=") - 1) && ngx_strncmp(conf->validation_type.data, "HEADER=", (sizeof("HEADER=") - 1)) == 0)
 	{
@@ -431,7 +431,7 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 			conf->jwt_accessor.context.data = conf->validation_type.data + (sizeof("HEADER=") - 1);
 		}
 
-		ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0, "Serching for jwt in header '%s'", conf->jwt_accessor.context.data);
+		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "Serching for jwt in header '%s'", conf->jwt_accessor.context.data);
 	}
 	else if (conf->validation_type.len >= (sizeof("COOKIE=") - 1) && ngx_strncmp(conf->validation_type.data, "COOKIE=", (sizeof("COOKIE=") - 1)) == 0)
 	{
@@ -448,7 +448,7 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 			conf->jwt_accessor.context.data = conf->validation_type.data + (sizeof("COOKIE=") - 1);
 		}
 
-		ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0, "Serching for jwt in cookie '%s'", conf->jwt_accessor.context.data);
+		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "Serching for jwt in cookie '%s'", conf->jwt_accessor.context.data);
 	}
 	else if (conf->validation_type.len >= (sizeof("URL=") - 1) && ngx_strncmp(conf->validation_type.data, "URL=", (sizeof("URL=") - 1)) == 0)
 	{
@@ -465,13 +465,15 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 			conf->jwt_accessor.context.data = conf->validation_type.data + (sizeof("URL=") - 1);
 		}
 
-		ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0, "Serching for jwt in url param '%s'", conf->jwt_accessor.context.data);
+		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "Serching for jwt in url param '%s'", conf->jwt_accessor.context.data);
 	}
 	else
 	{
 		ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "unsupported validation type");
 		return NGX_CONF_ERROR;
 	}
+
+	//TODO: merge policies
 
 	return NGX_CONF_OK;
 }
@@ -794,9 +796,24 @@ static ngx_flag_t matches_jwt_policy(ngx_http_request_t *r, const char *user, co
 				}
 			}
 
-			if (policy->roles->nelts == 1 && ngx_strcasecmp(((ngx_str_t *)policy->roles->elts)[0].data, (u_char *)role) == 0)
+			if (policy->roles->nelts == 1)
 			{
-				return 1;
+#if NGX_DEBUG
+				ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "checking role '%s'", ((ngx_str_t *)policy->roles->elts)[0].data);
+#endif
+
+				if (ngx_strcasecmp(((ngx_str_t *)policy->roles->elts)[0].data, (u_char *)role) == 0)
+				{
+#if NGX_DEBUG
+					ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "role '%s' found", ((ngx_str_t *)policy->roles->elts)[0].data);
+#endif
+
+					return 1;
+				}
+
+#if NGX_DEBUG
+				ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "role '%s' not found", ((ngx_str_t *)policy->roles->elts)[0].data);
+#endif
 			}
 		}
 	}
@@ -874,10 +891,22 @@ static ngx_flag_t matches_jwt_policy_n(ngx_http_request_t *r, const char *user, 
 
 		for (j = 0; j < policy->roles->nelts;)
 		{
+#if NGX_DEBUG
+			ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "checking role '%s'", ((ngx_str_t *)policy->roles->elts)[j].data);
+#endif
+
 			if (hashset_contains(&hashset, (const char *)((ngx_str_t *)policy->roles->elts)[j].data))
 			{
+#if NGX_DEBUG
+				ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "role '%s' found", ((ngx_str_t *)policy->roles->elts)[j].data);
+#endif
+
 				goto next_role;
 			}
+
+#if NGX_DEBUG
+			ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "role '%s' not found", ((ngx_str_t *)policy->roles->elts)[j].data);
+#endif
 
 			goto next_policy;
 
