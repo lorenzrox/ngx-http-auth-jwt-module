@@ -75,14 +75,21 @@ ngx_flag_t ngx_array_includes_insensitive(ngx_array_t *array, const char *value)
 	return 0;
 }
 
-size_t trim(char **value)
+size_t trim(char **value, char *next)
 {
 	size_t len;
 	char *start;
 	char *end;
 
 	start = *value;
-	len = ngx_strlen(start);
+	if (next == NULL)
+	{
+		len = strlen(start);
+	}
+	else
+	{
+		len = next - start;
+	}
 
 	if (len == 0)
 	{
@@ -109,24 +116,30 @@ size_t trim(char **value)
 
 ngx_int_t ngx_str_split(ngx_str_t *value, ngx_array_t *result, const char *separator)
 {
-	char *token;
-	char *context;
 	size_t len;
 	ngx_str_t *entry;
+	char *nextToken;
+	char *token = (char *)value->data;
+	size_t separatorLen = strlen(separator);
 
 	if (value->len > 0)
 	{
-		context = NULL;
-		token = strtok_r((char *)value->data, separator, &context);
-
-		if (token == NULL)
+		if (separatorLen == 0)
 		{
-			return NGX_OK;
+			entry = (ngx_str_t *)ngx_array_push(result);
+			if (entry == NULL)
+			{
+				return NGX_ERROR;
+			}
+
+			*entry = *value;
 		}
 
 		do
 		{
-			len = trim(&token);
+			nextToken = strstr(token, separator);
+			len = trim(&token, nextToken);
+
 			if (len > 0)
 			{
 				entry = (ngx_str_t *)ngx_array_push(result);
@@ -139,8 +152,8 @@ ngx_int_t ngx_str_split(ngx_str_t *value, ngx_array_t *result, const char *separ
 				entry->data = (u_char *)token;
 			}
 
-			token = strtok_r(NULL, separator, &context);
-		} while (token != NULL);
+			token = nextToken + separatorLen;
+		} while (nextToken != NULL);
 	}
 
 	return NGX_OK;
