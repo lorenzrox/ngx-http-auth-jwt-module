@@ -546,6 +546,10 @@ static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, vo
 	//Check for empty policy
 	if (users->nelts == 0 && roles->nelts == 0)
 	{
+#if NGX_DEBUG
+		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "found empty policy (%d)");
+#endif
+
 		ngx_array_destroy(users);
 		ngx_array_destroy(roles);
 		return NGX_CONF_OK;
@@ -557,17 +561,34 @@ static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, vo
 		goto error;
 	}
 
+#if NGX_DEBUG
 	ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "found valid policy (%d) for users (%d) and roles (%d)", accessType, users->nelts, roles->nelts);
 
-	for (i = 0; i < users->nelts; i++)
+	if (accessType == ACCESS_TYPE_ALLOW)
 	{
-		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "users (%s) is allowed", ((ngx_str_t *)users->elts)[i].data);
-	}
+		for (i = 0; i < users->nelts; i++)
+		{
+			ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "users (%s) is allowed", ((ngx_str_t *)users->elts)[i].data);
+		}
 
-	for (i = 0; i < roles->nelts; i++)
-	{
-		ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "role (%s) is allowed", ((ngx_str_t *)roles->elts)[i].data);
+		for (i = 0; i < roles->nelts; i++)
+		{
+			ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "role (%s) is allowed", ((ngx_str_t *)roles->elts)[i].data);
+		}
 	}
+	else
+	{
+		for (i = 0; i < users->nelts; i++)
+		{
+			ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "users (%s) is denied", ((ngx_str_t *)users->elts)[i].data);
+		}
+
+		for (i = 0; i < roles->nelts; i++)
+		{
+			ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "role (%s) is denied", ((ngx_str_t *)roles->elts)[i].data);
+		}
+	}
+#endif
 
 	policy->access_type = accessType;
 	policy->users = users;
@@ -575,7 +596,7 @@ static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, vo
 	return NGX_CONF_OK;
 
 error:
-	ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "an error occurred creating the policy");
+	ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "an error occurred creating the policy");
 
 	if (users != NULL)
 	{
