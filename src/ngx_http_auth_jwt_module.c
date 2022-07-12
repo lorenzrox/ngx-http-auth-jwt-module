@@ -702,7 +702,7 @@ static char *get_jwt_from_cookie(ngx_http_request_t *r, ngx_str_t *context)
 	ngx_int_t n;
 
 	// get the cookie
-	n = ngx_http_parse_multi_header_lines(r, &r->headers_in.cookie, context, &jwt_http_value);
+	n = ngx_http_parse_multi_header_lines(r, r->headers_in.cookie, context, &jwt_http_value);
 	if (n != NGX_DECLINED)
 	{
 		return ngx_str_t_to_char_ptr(r->pool, jwt_http_value);

@@ -2,7 +2,7 @@ FROM centos:7
 
 LABEL maintainer="TeslaGov" email="developers@teslagov.com"
 
-ARG NGINX_VERSION=1.16.1
+ARG NGINX_VERSION=1.23.0
 ARG JANSSON_VERSION=2.10
 ARG LIBJWT_VERSION=1.9.0
 
