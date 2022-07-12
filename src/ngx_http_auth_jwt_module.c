@@ -699,16 +699,16 @@ static char *get_jwt_from_header(ngx_http_request_t *r, ngx_str_t *context)
 static char *get_jwt_from_cookie(ngx_http_request_t *r, ngx_str_t *context)
 {
 	ngx_str_t jwt_http_value;
-	ngx_int_t n;
+	ngx_table_elt_t* cookie;
 
 	// get the cookie
-	n = ngx_http_parse_multi_header_lines(r, r->headers_in.cookie, context, &jwt_http_value);
-	if (n != NGX_DECLINED)
+	cookie = ngx_http_parse_multi_header_lines(r, r->headers_in.cookie, context, &jwt_http_value);
+	if (cookie == NULL)
 	{
-		return ngx_str_t_to_char_ptr(r->pool, jwt_http_value);
+		return NULL;
 	}
 
-	return NULL;
+	return ngx_str_t_to_char_ptr(r->pool, jwt_http_value);
 }
 
 static char *get_jwt_from_url(ngx_http_request_t *r, ngx_str_t *context)
