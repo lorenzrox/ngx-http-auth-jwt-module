@@ -6,7 +6,7 @@ set -o errexit
 DIR=$(pwd)
 BUILDDIR=$DIR/build
 NGINX_DIR=nginx
-NGINX_VERSION=1.19.8 
+NGINX_VERSION=1.23.0
 
 clean () {
     rm -rf build vendor

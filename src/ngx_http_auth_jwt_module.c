@@ -473,7 +473,7 @@ static char *ngx_http_auth_jwt_merge_loc_conf(ngx_conf_t *cf, void *parent, void
 		return NGX_CONF_ERROR;
 	}
 
-	//TODO: merge policies
+	// TODO: merge policies
 
 	return NGX_CONF_OK;
 }
@@ -541,7 +541,7 @@ static char *ngx_http_auth_jwt_add_policy(ngx_conf_t *cf, ngx_command_t *cmd, vo
 		}
 	}
 
-	//Check for empty policy
+	// Check for empty policy
 	if (users->nelts == 0 && roles->nelts == 0)
 	{
 #if NGX_DEBUG
@@ -702,7 +702,7 @@ static char *get_jwt_from_cookie(ngx_http_request_t *r, ngx_str_t *context)
 	ngx_int_t n;
 
 	// get the cookie
-	n = ngx_http_parse_multi_header_lines(&r->headers_in.cookies, context, &jwt_http_value);
+	n = ngx_http_parse_multi_header_lines(r, &r->headers_in.cookie, context, &jwt_http_value);
 	if (n != NGX_DECLINED)
 	{
 		return ngx_str_t_to_char_ptr(r->pool, jwt_http_value);
